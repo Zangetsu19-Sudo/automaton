@@ -22,7 +22,7 @@ import type {
 import type { PolicyEngine } from "./policy-engine.js";
 import { sanitizeToolResult, sanitizeInput } from "./injection-defense.js";
 import { createLogger } from "../observability/logger.js";
-import { safeBrowserFetch } from "../browser/safe-fetch.js";
+import { safeBrowserFetch, validateBrowserUrl } from "../browser/safe-fetch.js";
 
 const logger = createLogger("tools");
 
@@ -61,6 +61,7 @@ const EXTERNAL_SOURCE_TOOLS = new Set([
   "exec",
   "web_fetch",
   "browser_fetch",
+  "browser_render",
   "check_social_inbox",
 ]);
 
@@ -307,6 +308,87 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
           const message = error instanceof Error ? error.message : String(error);
           return `Browser fetch blocked/failed: ${message}`;
         }
+      },
+    },
+
+    {
+      name: "browser_render",
+      description:
+        "Render a public web page with headless Chromium inside the dedicated VM. Read-only: no clicks, typing, downloads, cookies from the host, or login state.",
+      category: "browser",
+      riskLevel: "safe",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: "Public HTTP/HTTPS URL to render",
+          },
+          timeout: {
+            type: "number",
+            description: "Timeout in milliseconds (default 30000, max 60000)",
+          },
+        },
+        required: ["url"],
+      },
+      execute: async (args, ctx) => {
+        if (
+          ctx.config.runtimeMode !== "local" ||
+          ctx.config.localIsolation !== "vm"
+        ) {
+          return "Browser render requires localIsolation='vm'. Direct host browser execution is intentionally disabled.";
+        }
+
+        let url: URL;
+        try {
+          url = validateBrowserUrl(args.url as string);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return `Browser render blocked: ${message}`;
+        }
+
+        const timeout = Math.min(
+          60_000,
+          Math.max(5_000, Number(args.timeout) || 30_000),
+        );
+        const seconds = Math.max(5, Math.ceil(timeout / 1000));
+        const quotedUrl = escapeShellArg(url.toString());
+
+        const command = [
+          'BROWSER="$(command -v chromium || command -v chromium-browser || true)"',
+          'test -n "$BROWSER"',
+          `timeout ${seconds}s "$BROWSER"`,
+          "--headless=new",
+          "--disable-gpu",
+          "--disable-dev-shm-usage",
+          "--disable-background-networking",
+          "--disable-component-update",
+          "--disable-sync",
+          "--metrics-recording-only",
+          "--no-first-run",
+          "--no-default-browser-check",
+          "--proxy-server=http://127.0.0.1:3128",
+          '--user-data-dir="$HOME/browser-profile"',
+          "--dump-dom",
+          quotedUrl,
+        ].join(" ");
+
+        const result = await ctx.conway.exec(command, timeout + 5_000);
+        if (result.exitCode !== 0) {
+          return `Browser render failed: ${result.stderr || "Chromium exited with an error"}`;
+        }
+
+        const maxChars = 1_000_000;
+        const truncated = result.stdout.length > maxChars;
+        const body = result.stdout.slice(0, maxChars);
+        return [
+          `URL: ${url.toString()}`,
+          `Rendered-In: VM headless Chromium`,
+          `Private-network proxy: enabled`,
+          `Truncated: ${truncated ? "yes" : "no"}`,
+          "",
+          body,
+        ].join("\n");
       },
     },
 
