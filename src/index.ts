@@ -290,6 +290,16 @@ async function run(): Promise<void> {
     localVm: config.runtimeMode === "local" ? config.localVm : undefined,
   });
 
+  if (config.runtimeMode === "local" && config.localIsolation === "vm") {
+    const probe = await conway.exec("printf AUTOMATON_VM_READY", 15_000);
+    if (probe.exitCode !== 0 || !probe.stdout.includes("AUTOMATON_VM_READY")) {
+      logger.error(
+        `VM connectivity probe failed. Refusing host fallback. stderr: ${probe.stderr || "(none)"}`,
+      );
+      process.exit(1);
+    }
+  }
+
   logger.info(
     `[${new Date().toISOString()}] Runtime mode: ${config.runtimeMode}${conwayEnabled ? " (Conway enabled)" : " (Conway optional/offline)"}`,
   );
