@@ -43,20 +43,29 @@ export async function buildTickContext(
   config: HeartbeatConfig,
   walletAddress?: string,
   chainType?: string,
+  runtimeMode: "conway" | "hybrid" | "local" = "conway",
+  localTreasuryCents = 500,
 ): Promise<TickContext> {
   const tickId = generateTickId();
   const startedAt = new Date();
 
-  // Fetch balances ONCE
+  // Fetch balances ONCE. Local mode uses the persistent local treasury ledger
+  // instead of treating an unavailable Conway balance as zero.
   let creditBalance = 0;
-  try {
-    creditBalance = await conway.getCreditsBalance();
-  } catch (err: any) {
-    logger.error("Failed to fetch credit balance", err instanceof Error ? err : undefined);
+  if (runtimeMode === "local") {
+    const row = db.prepare("SELECT value FROM kv_store WHERE key = ?").get("local_treasury_cents") as { value?: string } | undefined;
+    const stored = row?.value !== undefined ? Number(row.value) : localTreasuryCents;
+    creditBalance = Number.isFinite(stored) ? stored : localTreasuryCents;
+  } else {
+    try {
+      creditBalance = await conway.getCreditsBalance();
+    } catch (err: any) {
+      logger.error("Failed to fetch credit balance", err instanceof Error ? err : undefined);
+    }
   }
 
   let usdcBalance = 0;
-  if (walletAddress) {
+  if (walletAddress && runtimeMode !== "local") {
     try {
       const network = chainType === "solana" ? "solana:mainnet" : "eip155:8453";
       usdcBalance = await getUsdcBalance(walletAddress, network, chainType as any);
