@@ -270,20 +270,39 @@ async function run(): Promise<void> {
   }
 
   // Create Conway client
+  if (
+    config.runtimeMode === "local" &&
+    config.localIsolation === "vm" &&
+    !config.localVm
+  ) {
+    logger.error(
+      "localIsolation is set to 'vm' but no localVm configuration is present. Refusing to fall back to host execution.",
+    );
+    process.exit(1);
+  }
+
   const conway = createConwayClient({
     apiUrl: config.conwayApiUrl,
     apiKey: apiKey || "",
     sandboxId: effectiveSandboxId,
     localRoot: config.runtimeMode === "local" ? resolvePath(config.localSandboxRoot || "~/.automaton/workspace") : undefined,
+    localIsolation: config.runtimeMode === "local" ? config.localIsolation ?? "workspace" : undefined,
+    localVm: config.runtimeMode === "local" ? config.localVm : undefined,
   });
 
   logger.info(
     `[${new Date().toISOString()}] Runtime mode: ${config.runtimeMode}${conwayEnabled ? " (Conway enabled)" : " (Conway optional/offline)"}`,
   );
   if (config.runtimeMode === "local") {
-    logger.info(
-      `[${new Date().toISOString()}] Local workspace: ${resolvePath(config.localSandboxRoot || "~/.automaton/workspace")}`,
-    );
+    if (config.localIsolation === "vm") {
+      logger.info(
+        `[${new Date().toISOString()}] Local isolation: VM via SSH (${config.localVm?.user}@${config.localVm?.host}:${config.localVm?.port ?? 22})`,
+      );
+    } else {
+      logger.info(
+        `[${new Date().toISOString()}] Local workspace: ${resolvePath(config.localSandboxRoot || "~/.automaton/workspace")}`,
+      );
+    }
   }
 
   // Register automaton identity (one-time, immutable)
