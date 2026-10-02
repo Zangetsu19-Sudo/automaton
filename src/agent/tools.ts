@@ -22,6 +22,7 @@ import type {
 import type { PolicyEngine } from "./policy-engine.js";
 import { sanitizeToolResult, sanitizeInput } from "./injection-defense.js";
 import { createLogger } from "../observability/logger.js";
+import { safeBrowserFetch } from "../browser/safe-fetch.js";
 
 const logger = createLogger("tools");
 
@@ -59,6 +60,7 @@ function confinePathToSandbox(
 const EXTERNAL_SOURCE_TOOLS = new Set([
   "exec",
   "web_fetch",
+  "browser_fetch",
   "check_social_inbox",
 ]);
 
@@ -260,6 +262,47 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       execute: async (args, ctx) => {
         await ctx.conway.removePort(args.port as number);
         return `Port ${args.port} removed`;
+      },
+    },
+
+    // ── Browser / Public Web Tools ──
+    {
+      name: "browser_fetch",
+      description:
+        "Read a public HTTP/HTTPS page without cookies, login state, form submission, or private-network access. Returns textual content only.",
+      category: "browser",
+      riskLevel: "safe",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: "Public HTTP/HTTPS URL to fetch",
+          },
+          max_bytes: {
+            type: "number",
+            description: "Maximum response bytes to return (default 1000000)",
+          },
+        },
+        required: ["url"],
+      },
+      execute: async (args) => {
+        try {
+          const result = await safeBrowserFetch(args.url as string, {
+            maxBytes: typeof args.max_bytes === "number" ? args.max_bytes : undefined,
+          });
+          return [
+            `URL: ${result.url}`,
+            `Status: ${result.status}`,
+            `Content-Type: ${result.contentType || "unknown"}`,
+            `Truncated: ${result.truncated ? "yes" : "no"}`,
+            "",
+            result.body,
+          ].join("\n");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return `Browser fetch blocked/failed: ${message}`;
+        }
       },
     },
 
