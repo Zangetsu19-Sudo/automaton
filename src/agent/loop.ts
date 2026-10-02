@@ -616,6 +616,34 @@ export async function runAgentLoop(
         (msgs, opts) => inference.chat(msgs, { ...opts, tools: inferenceTools }),
       );
 
+      // In local runtime mode, the survival ledger pays the measured model cost.
+      // Free/local models naturally debit $0; paid direct providers consume treasury.
+      if (config.runtimeMode === "local" && routerResult.costCents > 0) {
+        const currentTreasury = Number(
+          db.getKV("local_treasury_cents") ?? config.localTreasuryCents ?? 500,
+        );
+        const safeCurrent = Number.isFinite(currentTreasury) ? currentTreasury : 0;
+        const nextTreasury = safeCurrent - routerResult.costCents;
+        db.setKV("local_treasury_cents", String(nextTreasury));
+        db.insertTransaction({
+          id: ulid(),
+          type: "inference",
+          amountCents: routerResult.costCents,
+          balanceAfterCents: nextTreasury,
+          description: `Local treasury inference debit: ${routerResult.model} via ${routerResult.provider}`,
+          timestamp: new Date().toISOString(),
+        });
+        financial = {
+          ...financial,
+          creditsCents: nextTreasury,
+          lastChecked: new Date().toISOString(),
+        };
+        log(
+          config,
+          `[TREASURY] -${(routerResult.costCents / 100).toFixed(2)} inference; balance ${(nextTreasury / 100).toFixed(2)}`,
+        );
+      }
+
       // Build a compatible response for the rest of the loop
       const response = {
         message: { content: routerResult.content, role: "assistant" as const },
