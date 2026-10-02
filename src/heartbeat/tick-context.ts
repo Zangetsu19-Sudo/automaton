@@ -53,7 +53,7 @@ export async function buildTickContext(
   // instead of treating an unavailable Conway balance as zero.
   let creditBalance = 0;
   if (runtimeMode === "local") {
-    const row = db.prepare("SELECT value FROM kv_store WHERE key = ?").get("local_treasury_cents") as { value?: string } | undefined;
+    const row = db.prepare("SELECT value FROM kv WHERE key = ?").get("local_treasury_cents") as { value?: string } | undefined;
     const stored = row?.value !== undefined ? Number(row.value) : localTreasuryCents;
     creditBalance = Number.isFinite(stored) ? stored : localTreasuryCents;
   } else {
