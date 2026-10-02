@@ -46,6 +46,10 @@ export interface AutomatonConfig {
   creatorMessage?: string;
   creatorAddress: string;
   registeredWithConway: boolean;
+  /** Runtime infrastructure mode. "local" disables Conway control-plane dependencies. */
+  runtimeMode?: "conway" | "hybrid" | "local";
+  /** Starting balance for the local survival ledger, in cents. Defaults to $5.00. */
+  localTreasuryCents?: number;
   sandboxId: string;
   conwayApiUrl: string;
   conwayApiKey: string;
@@ -79,6 +83,8 @@ export interface AutomatonConfig {
 
 export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
   conwayApiUrl: "https://api.conway.tech",
+  runtimeMode: "conway",
+  localTreasuryCents: 500,
   inferenceModel: "gpt-5.2",
   maxTokensPerTurn: 4096,
   heartbeatConfigPath: "~/.automaton/heartbeat.yml",
