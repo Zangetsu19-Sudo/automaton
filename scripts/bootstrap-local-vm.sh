@@ -22,6 +22,7 @@ apt-get install -y --no-install-recommends \
   git \
   openssh-server \
   python3 \
+  squid \
   chromium-browser 2>/dev/null || \
 apt-get install -y --no-install-recommends \
   ca-certificates \
@@ -29,6 +30,7 @@ apt-get install -y --no-install-recommends \
   git \
   openssh-server \
   python3 \
+  squid \
   chromium
 
 if ! id "${AUTOMATON_USER}" >/dev/null 2>&1; then
@@ -50,6 +52,40 @@ EOF
 
 systemctl enable ssh
 systemctl restart ssh
+
+# Browser egress proxy: Chromium is forced through this localhost-only proxy.
+# Squid resolves destinations itself and denies private/link-local/loopback
+# addresses, so redirects to local infrastructure are blocked too.
+cat >/etc/squid/squid.conf <<'SQUID'
+http_port 127.0.0.1:3128
+
+acl localhost src 127.0.0.1/32 ::1
+acl private_dst dst 0.0.0.0/8
+acl private_dst dst 10.0.0.0/8
+acl private_dst dst 100.64.0.0/10
+acl private_dst dst 127.0.0.0/8
+acl private_dst dst 169.254.0.0/16
+acl private_dst dst 172.16.0.0/12
+acl private_dst dst 192.0.0.0/24
+acl private_dst dst 192.168.0.0/16
+acl private_dst dst 198.18.0.0/15
+acl private_dst dst 224.0.0.0/4
+acl private_dst dst 240.0.0.0/4
+acl private_dst dst ::1/128
+acl private_dst dst fc00::/7
+acl private_dst dst fe80::/10
+
+http_access deny private_dst
+http_access allow localhost
+http_access deny all
+
+cache deny all
+access_log none
+cache_log /var/log/squid/cache.log
+SQUID
+
+systemctl enable squid
+systemctl restart squid
 
 cat <<EOF
 
