@@ -169,7 +169,9 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
         const confined = confinePathToSandbox(
           filePath,
           ctx.config.runtimeMode === "local"
-            ? ctx.config.localSandboxRoot || "~/.automaton/workspace"
+            ? ctx.config.localIsolation === "vm"
+              ? ctx.config.localVm?.workspaceRoot || "/home/automaton/workspace"
+              : ctx.config.localSandboxRoot || "~/.automaton/workspace"
             : SANDBOX_HOME,
         );
         if (typeof confined === "object") return confined.error;
@@ -199,7 +201,9 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
         const confined = confinePathToSandbox(
           filePath,
           ctx.config.runtimeMode === "local"
-            ? ctx.config.localSandboxRoot || "~/.automaton/workspace"
+            ? ctx.config.localIsolation === "vm"
+              ? ctx.config.localVm?.workspaceRoot || "/home/automaton/workspace"
+              : ctx.config.localSandboxRoot || "~/.automaton/workspace"
             : SANDBOX_HOME,
         );
         if (typeof confined === "object") return confined.error;
