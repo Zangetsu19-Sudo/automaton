@@ -197,10 +197,40 @@ async function run(): Promise<void> {
   const { account, chainIdentity, chainType: walletChainType } = await getWallet();
   const resolvedChainType = config.chainType || walletChainType || "evm";
   const apiKey = config.conwayApiKey || loadApiKeyFromConfig();
-  if (!apiKey) {
-    logger.error("No API key found. Run: automaton --provision");
+  let runtimeMode = config.runtimeMode ?? (apiKey ? "conway" : "local");
+  const hasDirectInference = Boolean(
+    config.openaiApiKey ||
+    config.anthropicApiKey ||
+    config.ollamaBaseUrl ||
+    process.env.OPENAI_API_KEY ||
+    process.env.ANTHROPIC_API_KEY ||
+    process.env.OLLAMA_BASE_URL
+  );
+
+  if (!apiKey && runtimeMode !== "local") {
+    if (hasDirectInference) {
+      logger.warn("Conway API key not found; falling back to local runtime mode.");
+      runtimeMode = "local";
+    } else {
+      logger.error(
+        "No inference provider configured. Add a Conway, OpenAI, Anthropic, or Ollama provider.",
+      );
+      process.exit(1);
+    }
+  }
+
+  if (!apiKey && !hasDirectInference) {
+    logger.error(
+      "Local runtime requires at least one direct inference provider (OpenAI, Anthropic, or Ollama).",
+    );
     process.exit(1);
   }
+
+  const conwayEnabled = runtimeMode !== "local" && Boolean(apiKey);
+  const effectiveSandboxId = conwayEnabled ? config.sandboxId : "";
+  config.runtimeMode = conwayEnabled ? runtimeMode : "local";
+  config.registeredWithConway = conwayEnabled;
+  config.sandboxId = effectiveSandboxId;
 
   // Initialize database
   const dbPath = resolvePath(config.dbPath);
@@ -219,8 +249,8 @@ async function run(): Promise<void> {
     address: chainIdentity.address,
     account,
     creatorAddress: config.creatorAddress,
-    sandboxId: config.sandboxId,
-    apiKey,
+    sandboxId: effectiveSandboxId,
+    apiKey: apiKey || "",
     createdAt,
     chainType: resolvedChainType,
     chainIdentity,
@@ -231,9 +261,10 @@ async function run(): Promise<void> {
   db.setIdentity("address", chainIdentity.address);
   db.setIdentity("creator", config.creatorAddress);
   db.setIdentity("chainType", resolvedChainType);
-  db.setIdentity("sandbox", config.sandboxId);
+  db.setIdentity("sandbox", effectiveSandboxId);
+  db.setIdentity("runtimeMode", config.runtimeMode || "local");
   const storedAutomatonId = db.getIdentity("automatonId");
-  const automatonId = storedAutomatonId || config.sandboxId || randomUUID();
+  const automatonId = storedAutomatonId || effectiveSandboxId || randomUUID();
   if (!storedAutomatonId) {
     db.setIdentity("automatonId", automatonId);
   }
@@ -241,13 +272,17 @@ async function run(): Promise<void> {
   // Create Conway client
   const conway = createConwayClient({
     apiUrl: config.conwayApiUrl,
-    apiKey,
-    sandboxId: config.sandboxId,
+    apiKey: apiKey || "",
+    sandboxId: effectiveSandboxId,
   });
+
+  logger.info(
+    `[${new Date().toISOString()}] Runtime mode: ${config.runtimeMode}${conwayEnabled ? " (Conway enabled)" : " (Conway optional/offline)"}`,
+  );
 
   // Register automaton identity (one-time, immutable)
   const registrationState = db.getIdentity("conwayRegistrationStatus");
-  if (registrationState !== "registered") {
+  if (conwayEnabled && registrationState !== "registered") {
     try {
       const genesisPromptHash = config.genesisPrompt
         ? keccak256(toHex(config.genesisPrompt))
@@ -286,7 +321,7 @@ async function run(): Promise<void> {
   modelRegistry.initialize();
   const inference = createInferenceClient({
     apiUrl: config.conwayApiUrl,
-    apiKey,
+    apiKey: apiKey || "",
     defaultModel: config.inferenceModel,
     maxTokens: config.maxTokensPerTurn,
     lowComputeModel: config.modelStrategy?.lowComputeModel || "gpt-5-mini",
@@ -302,7 +337,7 @@ async function run(): Promise<void> {
 
   // Create social client (chain-aware: pass ChainIdentity for Solana signing)
   let social: SocialClientInterface | undefined;
-  if (config.socialRelayUrl) {
+  if (config.socialRelayUrl && conwayEnabled) {
     social = createSocialClient(config.socialRelayUrl, resolvedChainType === "solana" ? chainIdentity : account);
     logger.info(`[${new Date().toISOString()}] Social relay: ${config.socialRelayUrl}`);
   }
@@ -336,36 +371,42 @@ async function run(): Promise<void> {
     logger.warn(`[${new Date().toISOString()}] State repo init failed: ${err.message}`);
   }
 
-  // Bootstrap topup: buy minimum credits ($5) from USDC so the agent can start.
-  // The agent decides larger topups itself via the topup_credits tool.
-  try {
-    let bootstrapTimer: ReturnType<typeof setTimeout>;
-    const bootstrapTimeout = new Promise<null>((_, reject) => {
-      bootstrapTimer = setTimeout(() => reject(new Error("bootstrap topup timed out")), 15_000);
-    });
+  // Bootstrap Conway credits only when Conway infrastructure is enabled.
+  // Local mode uses the local treasury ledger instead.
+  if (conwayEnabled) {
     try {
-      await Promise.race([
-        (async () => {
-          const creditsCents = await conway.getCreditsBalance().catch(() => 0);
-          const topupResult = await bootstrapTopup({
-            apiUrl: config.conwayApiUrl,
-            account,
-            creditsCents,
-            chainType: resolvedChainType,
-          });
-          if (topupResult?.success) {
-            logger.info(
-              `[${new Date().toISOString()}] Bootstrap topup: +$${topupResult.amountUsd} credits from USDC`,
-            );
-          }
-        })(),
-        bootstrapTimeout,
-      ]);
-    } finally {
-      clearTimeout(bootstrapTimer!);
+      let bootstrapTimer: ReturnType<typeof setTimeout>;
+      const bootstrapTimeout = new Promise<null>((_, reject) => {
+        bootstrapTimer = setTimeout(() => reject(new Error("bootstrap topup timed out")), 15_000);
+      });
+      try {
+        await Promise.race([
+          (async () => {
+            const creditsCents = await conway.getCreditsBalance().catch(() => 0);
+            const topupResult = await bootstrapTopup({
+              apiUrl: config.conwayApiUrl,
+              account,
+              creditsCents,
+              chainType: resolvedChainType,
+            });
+            if (topupResult?.success) {
+              logger.info(
+                `[${new Date().toISOString()}] Bootstrap topup: +${topupResult.amountUsd} credits from USDC`,
+              );
+            }
+          })(),
+          bootstrapTimeout,
+        ]);
+      } finally {
+        clearTimeout(bootstrapTimer!);
+      }
+    } catch (err: any) {
+      logger.warn(`[${new Date().toISOString()}] Bootstrap topup skipped: ${err.message}`);
     }
-  } catch (err: any) {
-    logger.warn(`[${new Date().toISOString()}] Bootstrap topup skipped: ${err.message}`);
+  } else {
+    logger.info(
+      `[${new Date().toISOString()}] Conway topup skipped in local runtime mode.`,
+    );
   }
 
   // Start heartbeat daemon (Phase 1.1: DurableScheduler)
