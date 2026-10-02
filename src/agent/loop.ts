@@ -358,7 +358,7 @@ export async function runAgentLoop(
   onStateChange?.("waking");
 
   // Get financial state
-  let financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+  let financial = await getFinancialState(conway, identity.address, db, config);
 
   // Check if this is the first run
   const isFirstRun = db.getTurnCount() === 0;
@@ -426,7 +426,7 @@ export async function runAgentLoop(
       }
 
       // Refresh financial state periodically
-      financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+      financial = await getFinancialState(conway, identity.address, db, config);
 
       // Check survival tier
       // api_unreachable: creditsCents === -1 means API failed with no cache.
@@ -441,7 +441,11 @@ export async function runAgentLoop(
         // available, buy credits NOW — before attempting inference.
         // This prevents the agent from dying mid-loop while waiting for
         // the heartbeat to fire. Uses a 60s cooldown to avoid hammering.
-        if ((tier === "critical" || tier === "low_compute") && financial.usdcBalance >= 5) {
+        if (
+          config.runtimeMode !== "local" &&
+          (tier === "critical" || tier === "low_compute") &&
+          financial.usdcBalance >= 5
+        ) {
           const INLINE_TOPUP_COOLDOWN_MS = 60_000;
           const lastInlineTopup = db.getKV("last_inline_topup_attempt");
           const cooldownExpired = !lastInlineTopup ||
@@ -461,7 +465,7 @@ export async function runAgentLoop(
                 log(config, `[AUTO-TOPUP] Bought $${topupResult.amountUsd} credits from USDC mid-loop`);
                 // Re-fetch financial state after topup so the rest of
                 // the turn sees the updated balance.
-                financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+                financial = await getFinancialState(conway, identity.address, db, config);
               }
             } catch (err: any) {
               logger.warn(`Inline auto-topup failed: ${err.message}`);
@@ -946,9 +950,29 @@ let _lastKnownUsdc = 0;
 async function getFinancialState(
   conway: ConwayClient,
   address: string,
-  db?: AutomatonDatabase,
-  chainType?: string,
+  db: AutomatonDatabase | undefined,
+  config: AutomatonConfig,
 ): Promise<FinancialState> {
+  if (config.runtimeMode === "local") {
+    const initialTreasury = Number.isFinite(config.localTreasuryCents)
+      ? Math.max(0, Math.floor(config.localTreasuryCents ?? 500))
+      : 500;
+    const stored = db?.getKV("local_treasury_cents");
+    let creditsCents = stored !== undefined ? Number(stored) : initialTreasury;
+    if (!Number.isFinite(creditsCents)) {
+      creditsCents = initialTreasury;
+    }
+    if (stored === undefined && db) {
+      db.setKV("local_treasury_cents", String(creditsCents));
+    }
+    return {
+      creditsCents,
+      usdcBalance: 0,
+      lastChecked: new Date().toISOString(),
+    };
+  }
+
+  const chainType = config.chainType || "evm";
   let creditsCents = _lastKnownCredits;
   let usdcBalance = _lastKnownUsdc;
 
