@@ -20,6 +20,7 @@ function createDb() {
   return db;
 }
 
+// Regression coverage for provider-independent survival accounting.
 describe("local runtime accounting", () => {
   it("uses the configured $5 local treasury without calling Conway", async () => {
     const db = createDb();
