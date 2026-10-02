@@ -274,11 +274,17 @@ async function run(): Promise<void> {
     apiUrl: config.conwayApiUrl,
     apiKey: apiKey || "",
     sandboxId: effectiveSandboxId,
+    localRoot: config.runtimeMode === "local" ? resolvePath(config.localSandboxRoot || "~/.automaton/workspace") : undefined,
   });
 
   logger.info(
     `[${new Date().toISOString()}] Runtime mode: ${config.runtimeMode}${conwayEnabled ? " (Conway enabled)" : " (Conway optional/offline)"}`,
   );
+  if (config.runtimeMode === "local") {
+    logger.info(
+      `[${new Date().toISOString()}] Local workspace: ${resolvePath(config.localSandboxRoot || "~/.automaton/workspace")}`,
+    );
+  }
 
   // Register automaton identity (one-time, immutable)
   const registrationState = db.getIdentity("conwayRegistrationStatus");
