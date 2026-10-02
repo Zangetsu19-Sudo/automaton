@@ -116,6 +116,26 @@ export async function runAgentLoop(
   const modelRegistry = new ModelRegistry(db.raw);
   modelRegistry.initialize();
 
+  // In local mode, catalog presence is not the same as provider availability.
+  // Disable paid remote-provider entries when their credentials are absent so
+  // routing can fall through to configured/free local models instead of
+  // accidentally attempting Conway as a legacy fallback.
+  if (config.runtimeMode === "local") {
+    const hasOpenAI = Boolean(config.openaiApiKey || process.env.OPENAI_API_KEY);
+    const hasAnthropic = Boolean(config.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+    for (const entry of modelRegistry.getAll()) {
+      if (entry.provider === "openai" && !hasOpenAI) {
+        modelRegistry.setEnabled(entry.modelId, false);
+      }
+      if (entry.provider === "anthropic" && !hasAnthropic) {
+        modelRegistry.setEnabled(entry.modelId, false);
+      }
+      if (entry.provider === "conway") {
+        modelRegistry.setEnabled(entry.modelId, false);
+      }
+    }
+  }
+
   // Discover Ollama models if configured
   if (ollamaBaseUrl) {
     const { discoverOllamaModels } = await import("../ollama/discover.js");
