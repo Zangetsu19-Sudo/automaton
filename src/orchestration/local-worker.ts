@@ -25,6 +25,7 @@ import type {
 } from "../types.js";
 import type { Database } from "better-sqlite3";
 import type { PolicyEngine } from "../agent/policy-engine.js";
+import { selectWorkerModelTier } from "../inference/role-tier-policy.js";
 
 const logger = createLogger("orchestration.local-worker");
 const DEFAULT_ALLOWED_EDIT_ROOT = process.cwd();
@@ -112,7 +113,11 @@ export class LocalWorkerPool {
       db: this.config.db,
       conway: this.config.conway,
       inference: {
-        chat: async (params) => this.config.inference.chat(params),
+        chat: async (params) =>
+          this.config.inference.chat({
+            ...params,
+            tier: selectWorkerModelTier(task.agentRole, params.tier),
+          }),
       },
       budget: createBudgetFromTask(task),
       wisdom: buildWisdomFromGoal(this.config.db, task.goalId, workspace),
