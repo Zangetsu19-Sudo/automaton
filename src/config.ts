@@ -139,6 +139,7 @@ export function createConfig(params: {
     registeredWithConway: params.registeredWithConway,
     runtimeMode: params.apiKey ? "conway" : "local",
     localTreasuryCents: DEFAULT_CONFIG.localTreasuryCents ?? 500,
+    localSandboxRoot: DEFAULT_CONFIG.localSandboxRoot ?? "~/.automaton/workspace",
     sandboxId: normalizedSandboxId,
     conwayApiUrl:
       DEFAULT_CONFIG.conwayApiUrl || "https://api.conway.tech",
