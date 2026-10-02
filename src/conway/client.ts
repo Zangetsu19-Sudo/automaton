@@ -28,17 +28,27 @@ import { keccak256, toHex } from "viem";
 import type { Address, PrivateKeyAccount } from "viem";
 import { randomUUID } from "crypto";
 import type { ChainType, ChainIdentity } from "../identity/chain.js";
+import { createVmSshRuntime, type LocalVmConfig } from "../runtime/vm-ssh.js";
 
 interface ConwayClientOptions {
   apiUrl: string;
   apiKey: string;
   sandboxId: string;
   localRoot?: string;
+  localIsolation?: "workspace" | "vm";
+  localVm?: LocalVmConfig;
 }
 
 export function createConwayClient(options: ConwayClientOptions): ConwayClient {
   const { apiUrl, apiKey } = options;
   const localRoot = resolveLocalRoot(options.localRoot);
+  const localIsolation = options.localIsolation ?? "workspace";
+  const vmRuntime =
+    localIsolation === "vm"
+      ? createVmSshRuntime(
+          options.localVm ?? ({} as LocalVmConfig),
+        )
+      : undefined;
   // Normalize sandbox ID defensively so values like whitespace/"undefined"/"null"
   // never produce malformed API paths such as /v1/sandboxes//exec.
   const sandboxId = normalizeSandboxId(options.sandboxId);
@@ -139,7 +149,11 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
     command: string,
     timeout?: number,
   ): Promise<ExecResult> => {
-    if (isLocal) return execLocal(command, timeout);
+    if (isLocal) {
+      return vmRuntime
+        ? vmRuntime.exec(command, timeout)
+        : execLocal(command, timeout);
+    }
 
     // Remote sandboxes default to / as cwd. Wrap commands to run from /root
     // (matching local exec behavior) unless the command already sets a directory.
@@ -190,6 +204,10 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
     content: string,
   ): Promise<void> => {
     if (isLocal) {
+      if (vmRuntime) {
+        vmRuntime.writeFile(filePath, content);
+        return;
+      }
       const resolved = resolveLocalPath(filePath);
       const dir = nodePath.dirname(resolved);
       if (!fs.existsSync(dir)) {
@@ -217,7 +235,9 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
 
   const readFile = async (filePath: string): Promise<string> => {
     if (isLocal) {
-      return fs.readFileSync(resolveLocalPath(filePath), "utf-8");
+      return vmRuntime
+        ? vmRuntime.readFile(filePath)
+        : fs.readFileSync(resolveLocalPath(filePath), "utf-8");
     }
     try {
       const result = await request(
@@ -241,6 +261,11 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
 
   const exposePort = async (port: number): Promise<PortInfo> => {
     if (isLocal) {
+      if (vmRuntime) {
+        throw new Error(
+          "VM port exposure is disabled until an explicit forwarding policy is configured.",
+        );
+      }
       return {
         port,
         publicUrl: `http://localhost:${port}`,
@@ -593,7 +618,14 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
   };
 
   const createScopedClient = (targetSandboxId: string): ConwayClient => {
-    return createConwayClient({ apiUrl, apiKey, sandboxId: targetSandboxId, localRoot });
+    return createConwayClient({
+      apiUrl,
+      apiKey,
+      sandboxId: targetSandboxId,
+      localRoot,
+      localIsolation,
+      localVm: options.localVm,
+    });
   };
 
   const client: ConwayClient = {
