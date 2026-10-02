@@ -1,0 +1,56 @@
+{
+  "providers": [
+    {
+      "id": "hermes-local",
+      "name": "Hermes Local",
+      "baseUrl": "http://localhost:11434/v1",
+      "apiKeyEnvVar": "HERMES_LOCAL_API_KEY",
+      "apiKeyOptional": true,
+      "models": [
+        {
+          "id": "hermes-3-llama-3.1-8b",
+          "tier": "cheap",
+          "contextWindow": 131072,
+          "maxOutputTokens": 4096,
+          "costPerInputToken": 0,
+          "costPerOutputToken": 0,
+          "supportsTools": true,
+          "supportsVision": false,
+          "supportsStreaming": true
+        },
+        {
+          "id": "hermes-3-llama-3.1-70b",
+          "tier": "fast",
+          "contextWindow": 131072,
+          "maxOutputTokens": 8192,
+          "costPerInputToken": 0,
+          "costPerOutputToken": 0,
+          "supportsTools": true,
+          "supportsVision": false,
+          "supportsStreaming": true
+        }
+      ],
+      "maxRequestsPerMinute": 120,
+      "maxTokensPerMinute": 250000,
+      "priority": 1,
+      "enabled": true
+    }
+  ],
+  "tierDefaults": {
+    "reasoning": {
+      "preferredProvider": "hermes-local",
+      "fallbackOrder": []
+    },
+    "fast": {
+      "preferredProvider": "hermes-local",
+      "fallbackOrder": []
+    },
+    "cheap": {
+      "preferredProvider": "hermes-local",
+      "fallbackOrder": []
+    }
+  },
+  "globalRateLimits": {
+    "emergencyStopCredits": 100
+  }
+}

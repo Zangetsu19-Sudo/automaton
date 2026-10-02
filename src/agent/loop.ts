@@ -96,7 +96,19 @@ export async function runAgentLoop(
   const { identity, config, db, conway, inference, social, skills, policyEngine, spendTracker, onStateChange, onTurnComplete, ollamaBaseUrl } =
     options;
 
-  const builtinTools = createBuiltinTools(identity.sandboxId);
+  const builtinTools = createBuiltinTools(identity.sandboxId).filter((tool) => {
+    if (config.runtimeMode !== "local") return true;
+
+    // Do not advertise Conway-only operations when the control plane is disabled.
+    // Local VM/file tools remain available because createConwayClient already
+    // implements those against the local machine when sandboxId is empty.
+    if (tool.category === "conway") return false;
+    if (tool.category === "replication") return false;
+    if (tool.name === "topup_credits" || tool.name === "transfer_credits") {
+      return false;
+    }
+    return true;
+  });
   const installedTools = loadInstalledTools(db);
   const tools = [...builtinTools, ...installedTools];
   const toolContext: ToolContext = {
@@ -115,6 +127,26 @@ export async function runAgentLoop(
   };
   const modelRegistry = new ModelRegistry(db.raw);
   modelRegistry.initialize();
+
+  // In local mode, catalog presence is not the same as provider availability.
+  // Disable paid remote-provider entries when their credentials are absent so
+  // routing can fall through to configured/free local models instead of
+  // accidentally attempting Conway as a legacy fallback.
+  if (config.runtimeMode === "local") {
+    const hasOpenAI = Boolean(config.openaiApiKey || process.env.OPENAI_API_KEY);
+    const hasAnthropic = Boolean(config.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+    for (const entry of modelRegistry.getAll()) {
+      if (entry.provider === "openai" && !hasOpenAI) {
+        modelRegistry.setEnabled(entry.modelId, false);
+      }
+      if (entry.provider === "anthropic" && !hasAnthropic) {
+        modelRegistry.setEnabled(entry.modelId, false);
+      }
+      if (entry.provider === "conway") {
+        modelRegistry.setEnabled(entry.modelId, false);
+      }
+    }
+  }
 
   // Discover Ollama models if configured
   if (ollamaBaseUrl) {
@@ -358,7 +390,7 @@ export async function runAgentLoop(
   onStateChange?.("waking");
 
   // Get financial state
-  let financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+  let financial = await getFinancialState(conway, identity.address, db, config);
 
   // Check if this is the first run
   const isFirstRun = db.getTurnCount() === 0;
@@ -426,7 +458,7 @@ export async function runAgentLoop(
       }
 
       // Refresh financial state periodically
-      financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+      financial = await getFinancialState(conway, identity.address, db, config);
 
       // Check survival tier
       // api_unreachable: creditsCents === -1 means API failed with no cache.
@@ -441,7 +473,11 @@ export async function runAgentLoop(
         // available, buy credits NOW — before attempting inference.
         // This prevents the agent from dying mid-loop while waiting for
         // the heartbeat to fire. Uses a 60s cooldown to avoid hammering.
-        if ((tier === "critical" || tier === "low_compute") && financial.usdcBalance >= 5) {
+        if (
+          config.runtimeMode !== "local" &&
+          (tier === "critical" || tier === "low_compute") &&
+          financial.usdcBalance >= 5
+        ) {
           const INLINE_TOPUP_COOLDOWN_MS = 60_000;
           const lastInlineTopup = db.getKV("last_inline_topup_attempt");
           const cooldownExpired = !lastInlineTopup ||
@@ -461,7 +497,7 @@ export async function runAgentLoop(
                 log(config, `[AUTO-TOPUP] Bought $${topupResult.amountUsd} credits from USDC mid-loop`);
                 // Re-fetch financial state after topup so the rest of
                 // the turn sees the updated balance.
-                financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+                financial = await getFinancialState(conway, identity.address, db, config);
               }
             } catch (err: any) {
               logger.warn(`Inline auto-topup failed: ${err.message}`);
@@ -611,6 +647,34 @@ export async function runAgentLoop(
         },
         (msgs, opts) => inference.chat(msgs, { ...opts, tools: inferenceTools }),
       );
+
+      // In local runtime mode, the survival ledger pays the measured model cost.
+      // Free/local models naturally debit $0; paid direct providers consume treasury.
+      if (config.runtimeMode === "local" && routerResult.costCents > 0) {
+        const currentTreasury = Number(
+          db.getKV("local_treasury_cents") ?? config.localTreasuryCents ?? 500,
+        );
+        const safeCurrent = Number.isFinite(currentTreasury) ? currentTreasury : 0;
+        const nextTreasury = safeCurrent - routerResult.costCents;
+        db.setKV("local_treasury_cents", String(nextTreasury));
+        db.insertTransaction({
+          id: ulid(),
+          type: "inference",
+          amountCents: routerResult.costCents,
+          balanceAfterCents: nextTreasury,
+          description: `Local treasury inference debit: ${routerResult.model} via ${routerResult.provider}`,
+          timestamp: new Date().toISOString(),
+        });
+        financial = {
+          ...financial,
+          creditsCents: nextTreasury,
+          lastChecked: new Date().toISOString(),
+        };
+        log(
+          config,
+          `[TREASURY] -${(routerResult.costCents / 100).toFixed(2)} inference; balance ${(nextTreasury / 100).toFixed(2)}`,
+        );
+      }
 
       // Build a compatible response for the rest of the loop
       const response = {
@@ -946,9 +1010,29 @@ let _lastKnownUsdc = 0;
 async function getFinancialState(
   conway: ConwayClient,
   address: string,
-  db?: AutomatonDatabase,
-  chainType?: string,
+  db: AutomatonDatabase | undefined,
+  config: AutomatonConfig,
 ): Promise<FinancialState> {
+  if (config.runtimeMode === "local") {
+    const initialTreasury = Number.isFinite(config.localTreasuryCents)
+      ? Math.max(0, Math.floor(config.localTreasuryCents ?? 500))
+      : 500;
+    const stored = db?.getKV("local_treasury_cents");
+    let creditsCents = stored !== undefined ? Number(stored) : initialTreasury;
+    if (!Number.isFinite(creditsCents)) {
+      creditsCents = initialTreasury;
+    }
+    if (stored === undefined && db) {
+      db.setKV("local_treasury_cents", String(creditsCents));
+    }
+    return {
+      creditsCents,
+      usdcBalance: 0,
+      lastChecked: new Date().toISOString(),
+    };
+  }
+
+  const chainType = config.chainType || "evm";
   let creditsCents = _lastKnownCredits;
   let usdcBalance = _lastKnownUsdc;
 

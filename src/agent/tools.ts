@@ -22,6 +22,7 @@ import type {
 import type { PolicyEngine } from "./policy-engine.js";
 import { sanitizeToolResult, sanitizeInput } from "./injection-defense.js";
 import { createLogger } from "../observability/logger.js";
+import { safeBrowserFetch, validateBrowserUrl } from "../browser/safe-fetch.js";
 
 const logger = createLogger("tools");
 
@@ -34,17 +35,22 @@ const SANDBOX_HOME = "/root";
  * Validate that a file path resolves to within the allowed root directory.
  * Returns the resolved absolute path, or an error string if out of bounds.
  */
-function confinePathToSandbox(filePath: string): string | { error: string } {
-  // Resolve ~ to SANDBOX_HOME
+function confinePathToSandbox(
+  filePath: string,
+  rootDir = SANDBOX_HOME,
+): string | { error: string } {
+  const home = process.env.HOME || process.env.USERPROFILE || process.cwd();
+  const expandedRoot = rootDir.startsWith("~")
+    ? nodePath.join(home, rootDir.slice(1))
+    : rootDir;
+  const root = nodePath.resolve(expandedRoot);
   const expanded = filePath.startsWith("~")
-    ? nodePath.join(SANDBOX_HOME, filePath.slice(1))
+    ? nodePath.join(root, filePath.slice(1))
     : filePath;
-  // Resolve to absolute (relative paths resolve against SANDBOX_HOME)
-  const resolved = nodePath.resolve(SANDBOX_HOME, expanded);
-  // Ensure the resolved path is within the sandbox home
-  if (resolved !== SANDBOX_HOME && !resolved.startsWith(SANDBOX_HOME + "/")) {
+  const resolved = nodePath.resolve(root, expanded);
+  if (resolved !== root && !resolved.startsWith(root + nodePath.sep)) {
     return {
-      error: `Blocked: write_file path "${filePath}" resolves to "${resolved}" which is outside the allowed directory (${SANDBOX_HOME}). Writes are confined to the sandbox home.`,
+      error: `Blocked: path "${filePath}" resolves to "${resolved}" which is outside the allowed directory (${root}).`,
     };
   }
   return resolved;
@@ -54,6 +60,8 @@ function confinePathToSandbox(filePath: string): string | { error: string } {
 const EXTERNAL_SOURCE_TOOLS = new Set([
   "exec",
   "web_fetch",
+  "browser_fetch",
+  "browser_render",
   "check_social_inbox",
 ]);
 
@@ -159,7 +167,14 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       execute: async (args, ctx) => {
         const filePath = args.path as string;
         // Path confinement: restrict writes to sandbox home directory
-        const confined = confinePathToSandbox(filePath);
+        const confined = confinePathToSandbox(
+          filePath,
+          ctx.config.runtimeMode === "local"
+            ? ctx.config.localIsolation === "vm"
+              ? ctx.config.localVm?.workspaceRoot || "/home/automaton/workspace"
+              : ctx.config.localSandboxRoot || "~/.automaton/workspace"
+            : SANDBOX_HOME,
+        );
         if (typeof confined === "object") return confined.error;
         // Guard against overwriting protected files (same check as edit_own_file)
         const { isProtectedFile } = await import("../self-mod/code.js");
@@ -184,8 +199,17 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
       execute: async (args, ctx) => {
         const filePath = args.path as string;
+        const confined = confinePathToSandbox(
+          filePath,
+          ctx.config.runtimeMode === "local"
+            ? ctx.config.localIsolation === "vm"
+              ? ctx.config.localVm?.workspaceRoot || "/home/automaton/workspace"
+              : ctx.config.localSandboxRoot || "~/.automaton/workspace"
+            : SANDBOX_HOME,
+        );
+        if (typeof confined === "object") return confined.error;
         // Block reads of sensitive files (wallet, env, config secrets)
-        const basename = filePath.split("/").pop() || "";
+        const basename = confined.split(nodePath.sep).pop() || "";
         const sensitiveFiles = ["wallet.json", ".env", "automaton.json"];
         const sensitiveExtensions = [".key", ".pem"];
         if (
@@ -196,11 +220,11 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
           return "Blocked: Cannot read sensitive file. This protects credentials and secrets.";
         }
         try {
-          return await ctx.conway.readFile(filePath);
+          return await ctx.conway.readFile(confined);
         } catch {
           // Conway files/read API may be broken — fall back to exec(cat)
           const result = await ctx.conway.exec(
-            `cat ${escapeShellArg(filePath)}`,
+            `cat ${escapeShellArg(confined)}`,
             30_000,
           );
           if (result.exitCode !== 0) {
@@ -243,6 +267,128 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       execute: async (args, ctx) => {
         await ctx.conway.removePort(args.port as number);
         return `Port ${args.port} removed`;
+      },
+    },
+
+    // ── Browser / Public Web Tools ──
+    {
+      name: "browser_fetch",
+      description:
+        "Read a public HTTP/HTTPS page without cookies, login state, form submission, or private-network access. Returns textual content only.",
+      category: "browser",
+      riskLevel: "safe",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: "Public HTTP/HTTPS URL to fetch",
+          },
+          max_bytes: {
+            type: "number",
+            description: "Maximum response bytes to return (default 1000000)",
+          },
+        },
+        required: ["url"],
+      },
+      execute: async (args) => {
+        try {
+          const result = await safeBrowserFetch(args.url as string, {
+            maxBytes: typeof args.max_bytes === "number" ? args.max_bytes : undefined,
+          });
+          return [
+            `URL: ${result.url}`,
+            `Status: ${result.status}`,
+            `Content-Type: ${result.contentType || "unknown"}`,
+            `Truncated: ${result.truncated ? "yes" : "no"}`,
+            "",
+            result.body,
+          ].join("\n");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return `Browser fetch blocked/failed: ${message}`;
+        }
+      },
+    },
+
+    {
+      name: "browser_render",
+      description:
+        "Render a public web page with headless Chromium inside the dedicated VM. Read-only: no clicks, typing, downloads, cookies from the host, or login state.",
+      category: "browser",
+      riskLevel: "safe",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: "Public HTTP/HTTPS URL to render",
+          },
+          timeout: {
+            type: "number",
+            description: "Timeout in milliseconds (default 30000, max 60000)",
+          },
+        },
+        required: ["url"],
+      },
+      execute: async (args, ctx) => {
+        if (
+          ctx.config.runtimeMode !== "local" ||
+          ctx.config.localIsolation !== "vm"
+        ) {
+          return "Browser render requires localIsolation='vm'. Direct host browser execution is intentionally disabled.";
+        }
+
+        let url: URL;
+        try {
+          url = validateBrowserUrl(args.url as string);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return `Browser render blocked: ${message}`;
+        }
+
+        const timeout = Math.min(
+          60_000,
+          Math.max(5_000, Number(args.timeout) || 30_000),
+        );
+        const seconds = Math.max(5, Math.ceil(timeout / 1000));
+        const quotedUrl = escapeShellArg(url.toString());
+
+        const command = [
+          'BROWSER="$(command -v chromium || command -v chromium-browser || true)"',
+          'test -n "$BROWSER"',
+          `timeout ${seconds}s "$BROWSER"`,
+          "--headless=new",
+          "--disable-gpu",
+          "--disable-dev-shm-usage",
+          "--disable-background-networking",
+          "--disable-component-update",
+          "--disable-sync",
+          "--metrics-recording-only",
+          "--no-first-run",
+          "--no-default-browser-check",
+          "--proxy-server=http://127.0.0.1:3128",
+          '--user-data-dir="$HOME/browser-profile"',
+          "--dump-dom",
+          quotedUrl,
+        ].join(" ");
+
+        const result = await ctx.conway.exec(command, timeout + 5_000);
+        if (result.exitCode !== 0) {
+          return `Browser render failed: ${result.stderr || "Chromium exited with an error"}`;
+        }
+
+        const maxChars = 1_000_000;
+        const truncated = result.stdout.length > maxChars;
+        const body = result.stdout.slice(0, maxChars);
+        return [
+          `URL: ${url.toString()}`,
+          `Rendered-In: VM headless Chromium`,
+          `Private-network proxy: enabled`,
+          `Truncated: ${truncated ? "yes" : "no"}`,
+          "",
+          body,
+        ].join("\n");
       },
     },
 

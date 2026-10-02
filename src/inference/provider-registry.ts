@@ -8,6 +8,8 @@ export interface ProviderConfig {
   name: string;
   baseUrl: string;
   apiKeyEnvVar: string;
+  /** Allow OpenAI-compatible local endpoints that do not require authentication. */
+  apiKeyOptional?: boolean;
   models: ModelConfig[];
   maxRequestsPerMinute: number;
   maxTokensPerMinute: number;
@@ -209,6 +211,7 @@ const DEFAULT_PROVIDERS: ProviderConfig[] = [
     name: "Local (Ollama/vLLM)",
     baseUrl: "http://localhost:11434/v1",
     apiKeyEnvVar: "LOCAL_API_KEY",
+    apiKeyOptional: true,
     models: [
       {
         id: "llama3.3:70b",
@@ -449,8 +452,10 @@ export class ProviderRegistry {
       return configured;
     }
 
-    if (provider.id === "local") {
-      return "local";
+    if (provider.apiKeyOptional) {
+      // The OpenAI SDK requires a non-empty string even when the upstream
+      // endpoint itself does not authenticate (common for Ollama/vLLM/LM Studio).
+      return "local-no-auth";
     }
 
     return `missing-${provider.apiKeyEnvVar.toLowerCase()}`;
@@ -459,6 +464,13 @@ export class ProviderRegistry {
   private isProviderActive(provider: ProviderConfig): boolean {
     if (!provider.enabled) {
       return false;
+    }
+
+    if (!provider.apiKeyOptional) {
+      const apiKey = process.env[provider.apiKeyEnvVar];
+      if (typeof apiKey !== "string" || apiKey.length === 0) {
+        return false;
+      }
     }
 
     const disabled = this.disablements.get(provider.id);
@@ -542,6 +554,7 @@ function normalizeProviders(input: unknown): ProviderConfig[] {
       name: stringOr(candidate.name, fallback?.name ?? id),
       baseUrl: stringOr(candidate.baseUrl, fallback?.baseUrl ?? "https://api.openai.com/v1"),
       apiKeyEnvVar: stringOr(candidate.apiKeyEnvVar, fallback?.apiKeyEnvVar ?? "OPENAI_API_KEY"),
+      apiKeyOptional: booleanOr(candidate.apiKeyOptional, fallback?.apiKeyOptional ?? false),
       models,
       maxRequestsPerMinute: numberOr(candidate.maxRequestsPerMinute, fallback?.maxRequestsPerMinute ?? 600),
       maxTokensPerMinute: numberOr(candidate.maxTokensPerMinute, fallback?.maxTokensPerMinute ?? 200000),

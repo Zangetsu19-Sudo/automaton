@@ -226,6 +226,23 @@ export class InferenceRouter {
       }
     }
 
+    // 3. Last-resort local/free fallback. This lets newly discovered Ollama
+    // models (including Hermes-family models) work without editing the static
+    // routing matrix first. Prefer tool-capable models because agent turns
+    // depend on function calling.
+    const freeFallback = this.registry
+      .getAvailable()
+      .filter((entry) =>
+        entry.enabled &&
+        entry.costPer1kInput === 0 &&
+        entry.costPer1kOutput === 0
+      )
+      .sort((a, b) => Number(b.supportsTools) - Number(a.supportsTools))[0];
+
+    if (freeFallback) {
+      return freeFallback;
+    }
+
     return null;
   }
 
