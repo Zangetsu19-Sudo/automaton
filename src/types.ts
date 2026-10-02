@@ -50,6 +50,8 @@ export interface AutomatonConfig {
   runtimeMode?: "conway" | "hybrid" | "local";
   /** Starting balance for the local survival ledger, in cents. Defaults to $5.00. */
   localTreasuryCents?: number;
+  /** Root directory used for workspace-confined local execution. */
+  localSandboxRoot?: string;
   sandboxId: string;
   conwayApiUrl: string;
   conwayApiKey: string;
@@ -85,6 +87,7 @@ export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
   conwayApiUrl: "https://api.conway.tech",
   runtimeMode: "conway",
   localTreasuryCents: 500,
+  localSandboxRoot: "~/.automaton/workspace",
   inferenceModel: "gpt-5.2",
   maxTokensPerTurn: 4096,
   heartbeatConfigPath: "~/.automaton/heartbeat.yml",
@@ -167,7 +170,8 @@ export type ToolCategory =
   | "git"
   | "registry"
   | "replication"
-  | "memory";
+  | "memory"
+  | "browser";
 
 export interface ToolContext {
   identity: AutomatonIdentity;
