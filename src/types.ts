@@ -52,6 +52,17 @@ export interface AutomatonConfig {
   localTreasuryCents?: number;
   /** Root directory used for workspace-confined local execution. */
   localSandboxRoot?: string;
+  /** Isolation backend for local runtime. */
+  localIsolation?: "workspace" | "vm";
+  /** SSH configuration for a dedicated guest VM when localIsolation="vm". */
+  localVm?: {
+    host: string;
+    port?: number;
+    user: string;
+    workspaceRoot?: string;
+    identityFile?: string;
+    knownHostsFile?: string;
+  };
   sandboxId: string;
   conwayApiUrl: string;
   conwayApiKey: string;
@@ -88,6 +99,7 @@ export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
   runtimeMode: "conway",
   localTreasuryCents: 500,
   localSandboxRoot: "~/.automaton/workspace",
+  localIsolation: "workspace",
   inferenceModel: "gpt-5.2",
   maxTokensPerTurn: 4096,
   heartbeatConfigPath: "~/.automaton/heartbeat.yml",
