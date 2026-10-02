@@ -96,7 +96,19 @@ export async function runAgentLoop(
   const { identity, config, db, conway, inference, social, skills, policyEngine, spendTracker, onStateChange, onTurnComplete, ollamaBaseUrl } =
     options;
 
-  const builtinTools = createBuiltinTools(identity.sandboxId);
+  const builtinTools = createBuiltinTools(identity.sandboxId).filter((tool) => {
+    if (config.runtimeMode !== "local") return true;
+
+    // Do not advertise Conway-only operations when the control plane is disabled.
+    // Local VM/file tools remain available because createConwayClient already
+    // implements those against the local machine when sandboxId is empty.
+    if (tool.category === "conway") return false;
+    if (tool.category === "replication") return false;
+    if (tool.name === "topup_credits" || tool.name === "transfer_credits") {
+      return false;
+    }
+    return true;
+  });
   const installedTools = loadInstalledTools(db);
   const tools = [...builtinTools, ...installedTools];
   const toolContext: ToolContext = {
