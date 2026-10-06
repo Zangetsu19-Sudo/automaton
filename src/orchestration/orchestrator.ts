@@ -737,6 +737,26 @@ export class Orchestrator {
       };
     }
 
+    // REPLAN TERMINAL GOAL GUARD
+    // failTask() can exhaust retries and mark the goal failed before the
+    // orchestrator transitions into replanning. Revive it while replanning
+    // is still allowed.
+    const persistedGoalForReplan = getGoalById(
+      this.params.db,
+      state.goalId,
+    );
+
+    if (
+      persistedGoalForReplan?.status === "failed" &&
+      state.replanCount < this.getMaxReplans()
+    ) {
+      updateGoalStatus(
+        this.params.db,
+        persistedGoalForReplan.id,
+        "active",
+      );
+    }
+
     let output: PlannerOutput;
     try {
       output = await replanAfterFailure(
