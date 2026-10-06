@@ -374,6 +374,7 @@ export async function runAgentLoop(
   let lastToolPatterns: string[] = [];
   let loopWarningPattern: string | null = null;
   let idleToolTurns = 0;
+  let activeGoalNoActionRetries = 0;
   // blockedGoalTurns removed — replaced by immediate sleep + exponential backoff
 
   // Drain any stale wake events from before this loop started,
@@ -908,7 +909,7 @@ export async function runAgentLoop(
         "update_genesis_prompt", "update_agent_card", "modify_heartbeat",
         "expose_port", "remove_port", "x402_fetch", "manage_dns",
         "distress_signal", "prune_dead_children", "sleep",
-        "update_soul", "remember_fact", "set_goal", "complete_goal",
+        "update_soul", "create_goal", "remember_fact", "set_goal", "complete_goal",
         "save_procedure", "note_about_agent", "forget",
         "enter_low_compute", "switch_model", "review_upstream_changes",
       ]);
@@ -941,22 +942,54 @@ export async function runAgentLoop(
         break;
       }
 
-      // ── If no tool calls and just text, the agent might be done thinking ──
+      // ── Text-only response recovery ──
       if (
         running &&
         (!response.toolCalls || response.toolCalls.length === 0) &&
         response.finishReason === "stop"
       ) {
-        // Agent produced text without tool calls.
-        // This is a natural pause point -- no work queued, sleep briefly.
-        log(config, "[IDLE] No pending inputs. Entering brief sleep.");
-        db.setKV(
-          "sleep_until",
-          new Date(Date.now() + 60_000).toISOString(),
-        );
-        db.setAgentState("sleeping");
-        onStateChange?.("sleeping");
-        running = false;
+        const hasActiveGoal =
+          hasTable(db.raw, "goals") &&
+          Boolean(
+            db.raw
+              .prepare(
+                "SELECT 1 FROM goals WHERE status = 'active' LIMIT 1",
+              )
+              .get(),
+          );
+
+        if (hasActiveGoal && activeGoalNoActionRetries < 2) {
+          activeGoalNoActionRetries++;
+
+          log(
+            config,
+            `[RECOVER] Active goal exists but model produced no tool action. Retry ${activeGoalNoActionRetries}/2.`,
+          );
+
+          pendingInput = {
+            content:
+              "ACTIVE GOAL RECOVERY: You already have an active goal. " +
+              "Do not ask the creator to provide a function call. " +
+              "YOU are the tool caller. Choose and invoke one advertised tool " +
+              "that advances the active goal now. Use the goal/task state already " +
+              "provided by the orchestrator.",
+            source: "system",
+          };
+        } else {
+          activeGoalNoActionRetries = 0;
+
+          log(config, "[IDLE] No pending actionable work. Entering brief sleep.");
+
+          db.setKV(
+            "sleep_until",
+            new Date(Date.now() + 60_000).toISOString(),
+          );
+          db.setAgentState("sleeping");
+          onStateChange?.("sleeping");
+          running = false;
+        }
+      } else if (response.toolCalls && response.toolCalls.length > 0) {
+        activeGoalNoActionRetries = 0;
       }
 
       consecutiveErrors = 0;

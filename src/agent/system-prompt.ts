@@ -8,6 +8,7 @@
 import fs from "fs";
 import crypto from "crypto";
 import path from "path";
+import os from "node:os";
 import type Database from "better-sqlite3";
 import { createLogger } from "../observability/logger.js";
 
@@ -747,6 +748,15 @@ ${orchestratorStatus}
     .join("\n");
   sections.push(`--- AVAILABLE TOOLS ---\n${toolDescriptions}\n--- END TOOLS ---`);
 
+  sections.push(
+    `--- TOOL USE RULES ---
+You are the caller of your tools.
+When an action is needed, select and invoke one of the advertised tools yourself.
+Never ask the creator, user, or another party to "provide a function call".
+Never merely describe a tool invocation when you can invoke that tool directly.
+--- END TOOL USE RULES ---`,
+  );
+
   // Layer 9: Creator's Initial Message (first run only)
   if (isFirstRun && config.creatorMessage) {
     sections.push(
@@ -762,7 +772,7 @@ ${orchestratorStatus}
  */
 function loadSoulMd(): string | null {
   try {
-    const home = process.env.HOME || "/root";
+    const home = os.homedir();
     const soulPath = path.join(home, ".automaton", "SOUL.md");
     if (fs.existsSync(soulPath)) {
       return fs.readFileSync(soulPath, "utf-8");
@@ -778,7 +788,7 @@ function loadSoulMd(): string | null {
  */
 function loadWorklog(): string | null {
   try {
-    const home = process.env.HOME || "/root";
+    const home = os.homedir();
     const worklogPath = path.join(home, ".automaton", "WORKLOG.md");
     if (fs.existsSync(worklogPath)) {
       return fs.readFileSync(worklogPath, "utf-8");
