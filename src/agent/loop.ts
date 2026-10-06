@@ -112,7 +112,17 @@ export async function runAgentLoop(
     return true;
   });
   const installedTools = loadInstalledTools(db);
-  const tools = [...builtinTools, ...installedTools];
+  // LOCAL AUTONOMOUS IDENTITY GUARD
+  // Small local parent models must not opportunistically rewrite identity
+  // or the immutable operating mission during ordinary planning turns.
+  const tools = [...builtinTools, ...installedTools].filter((tool) => {
+    if (config.runtimeMode !== "local") return true;
+
+    return ![
+      "update_soul",
+      "update_genesis_prompt",
+    ].includes(tool.name);
+  });
   const toolContext: ToolContext = {
     identity,
     config,
