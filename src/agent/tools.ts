@@ -3028,6 +3028,38 @@ Model: ${ctx.inference.getDefaultModel()}
             .join(" ")
             .toLowerCase();
 
+          // AUTONOMOUS ECONOMIC GOAL REQUIREMENTS
+          // A root survival goal must describe value, an audience, and
+          // a plausible voluntary-payment path. Generic technical projects
+          // are tasks, not economic goals.
+          const hasPaymentPath =
+            /\b(revenue|income|paid|paying|payment|sell|sale|sales|charge|charging|price|pricing|subscription|commission|contract|purchase|buyer|customer|client|monetiz|earn)\w*\b/i.test(
+              proposal,
+            );
+
+          const hasAudience =
+            /\b(customer|client|buyer|user|business|businesses|developer|developers|creator|creators|freelancer|freelancers|seller|sellers|team|teams|organization|organizations|shop|shops|market|niche|audience)\w*\b/i.test(
+              proposal,
+            );
+
+          const hasDeliverable =
+            /\b(service|product|software|tool|utility|automation|website|application|app|research|report|analysis|template|plugin|script|dataset|design|development|deliverable)\w*\b/i.test(
+              proposal,
+            );
+
+          if (!hasPaymentPath || !hasAudience || !hasDeliverable) {
+            return (
+              "GOAL REJECTED: this is a technical activity, not yet an economic survival goal. " +
+              "Create a substantially different goal that explicitly identifies: " +
+              "(1) a useful product/service/deliverable, " +
+              "(2) a specific customer or user group with a problem, and " +
+              "(3) a plausible path to voluntary payment or first revenue. " +
+              "Do not create infrastructure merely for its own sake. " +
+              "Example shape: build a small useful tool for a specific customer segment, " +
+              "validate that they need it, package it as an offer, and pursue a lawful first sale."
+            );
+          }
+
           const blockedRevenuePatterns: Array<[RegExp, string]> = [
             [/\bnfts?\b|non[- ]fungible|nft collection|mint(?:ing)? nft/i,
               "NFT creation or monetization"],
