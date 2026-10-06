@@ -63,6 +63,7 @@ import { LocalWorkerPool } from "../orchestration/local-worker.js";
 import { SimpleAgentTracker, SimpleFundingProtocol } from "../orchestration/simple-tracker.js";
 import { HarnessRegistry } from "./harness-registry.js";
 import { createWorkerInferenceBridge } from "./worker-inference-bridge.js";
+import type { WorkerInferenceClient } from "./harness-types.js";
 import { ProviderRegistry } from "../inference/provider-registry.js";
 import { UnifiedInferenceClient } from "../inference/inference-client.js";
 import { isIdleOnlyTool } from "./idle-only-tools.js";
@@ -214,7 +215,53 @@ export async function runAgentLoop(
 
       // Adapter: local workers use the unified inference path so planner-backed
       // harnesses can preserve tier + responseFormat contracts.
-      const workerInference = createWorkerInferenceBridge(unifiedInference);
+      const preferredLocalWorkerModel =
+        modelRegistry
+          .getAll()
+          .find(
+            (entry) =>
+              entry.enabled &&
+              entry.provider === "ollama" &&
+              /coder/i.test(entry.modelId),
+          )?.modelId ??
+        modelRegistry
+          .getAll()
+          .find(
+            (entry) =>
+              entry.enabled &&
+              entry.provider === "ollama",
+          )?.modelId ??
+        config.inferenceModel;
+
+      const workerInference: WorkerInferenceClient =
+        config.runtimeMode === "local"
+          ? {
+              chat: async (params) => {
+                const model =
+                  params.tier === "cheap"
+                    ? config.inferenceModel
+                    : preferredLocalWorkerModel;
+
+                const response = await inference.chat(params.messages, {
+                  model,
+                  tools: params.tools,
+                  maxTokens: params.maxTokens,
+                  temperature: params.temperature,
+                });
+
+                return {
+                  content: response.message.content,
+                  toolCalls: response.toolCalls,
+                };
+              },
+            }
+          : createWorkerInferenceBridge(unifiedInference);
+
+      if (config.runtimeMode === "local") {
+        logger.info(
+          `Local worker inference: cheap=${config.inferenceModel}, fast/reasoning=${preferredLocalWorkerModel}`,
+        );
+      }
 
       // Local worker pool: runs inference-driven agents in-process
       // as async tasks. Falls back from Conway sandbox spawning.

@@ -195,8 +195,28 @@ export class Orchestrator {
   async matchTaskToAgent(task: TaskNode): Promise<AgentAssignment> {
     const requestedRole = task.agentRole?.trim() || "generalist";
 
-    const idleAgents = this.params.agentTracker.getIdle();
-    const directRoleMatch = idleAgents.find((agent) => agent.role === requestedRole);
+    const idleAgents = this.params.agentTracker.getIdle().filter((agent) => {
+      if (!this.params.isWorkerAlive) return true;
+
+      const alive = this.params.isWorkerAlive(agent.address);
+
+      if (!alive) {
+        logger.warn("Ignoring stale idle worker", {
+          worker: agent.address,
+          role: agent.role,
+        });
+
+        this.params.db.prepare(
+          "UPDATE children SET status = 'dead' WHERE address = ?",
+        ).run(agent.address);
+      }
+
+      return alive;
+    });
+
+    const directRoleMatch = idleAgents.find(
+      (agent) => agent.role === requestedRole,
+    );
     if (directRoleMatch) {
       return {
         agentAddress: directRoleMatch.address,
@@ -207,11 +227,26 @@ export class Orchestrator {
 
     const bestIdle = this.params.agentTracker.getBestForTask(requestedRole);
     if (bestIdle) {
-      return {
-        agentAddress: bestIdle.address,
-        agentName: bestIdle.name,
-        spawned: false,
-      };
+      const alive =
+        !this.params.isWorkerAlive ||
+        this.params.isWorkerAlive(bestIdle.address);
+
+      if (alive) {
+        return {
+          agentAddress: bestIdle.address,
+          agentName: bestIdle.name,
+          spawned: false,
+        };
+      }
+
+      logger.warn("Rejecting stale best-match worker", {
+        worker: bestIdle.address,
+        role: requestedRole,
+      });
+
+      this.params.db.prepare(
+        "UPDATE children SET status = 'dead' WHERE address = ?",
+      ).run(bestIdle.address);
     }
 
     const spawned = await this.trySpawnAgent(task);
@@ -540,6 +575,12 @@ export class Orchestrator {
             taskId: task.id,
             worker: task.assignedTo,
           });
+          // The task can be retried, but the dead worker itself must never
+          // remain eligible for reassignment.
+          this.params.db.prepare(
+            "UPDATE children SET status = 'dead' WHERE address = ?",
+          ).run(task.assignedTo);
+
           this.params.db.prepare(
             "UPDATE task_graph SET status = 'pending', assigned_to = NULL, started_at = NULL WHERE id = ?",
           ).run(task.id);
