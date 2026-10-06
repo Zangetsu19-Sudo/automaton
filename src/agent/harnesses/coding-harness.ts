@@ -34,6 +34,18 @@ or review code to complete this task.
 6. When done, call task_done with a summary of changes made and test results.
 7. If you cannot complete the task, call task_done explaining what you tried and why it failed.
 
+## Mandatory Action Protocol
+
+- DO NOT ask the user what files, language, or project structure to use.
+- Inspect the workspace yourself using list_dir, read_file, or exec.
+- If the workspace is empty, create the smallest viable implementation yourself.
+- While working, every response MUST invoke at least one available tool.
+- Do not narrate what you intend to do instead of doing it.
+- NEVER claim that a file was created, modified, tested, or executed unless a tool result in this conversation proves it.
+- NEVER say that task_done was called. Actually invoke the task_done tool.
+- For a new coding project, your first action should normally be list_dir or an equivalent exec inspection.
+- After implementation, run a real verification command with exec before reporting success.
+
 ## Anti-Loop Rules
 
 - NEVER check balances, credits, or system status. You do not have those tools.
@@ -119,7 +131,17 @@ When calling task_done, provide:
           try {
             await this.context.conway.writeFile(confined, content);
             return `Wrote ${content.length} bytes to ${confined}`;
-          } catch {
+          } catch (vmError) {
+            // VM WRITE HOST-FALLBACK GUARD
+            if (
+              this.context.config.runtimeMode === "local" &&
+              this.context.config.localIsolation === "vm"
+            ) {
+              return `write error: VM write failed; host fallback disabled: ${
+                vmError instanceof Error ? vmError.message : String(vmError)
+              }`;
+            }
+
             try {
               await fs.mkdir(path.dirname(confined), { recursive: true });
               await fs.writeFile(confined, content, "utf8");
@@ -157,7 +179,15 @@ When calling task_done, provide:
             let content: string;
             try {
               content = await this.context.conway.readFile(confined);
-            } catch {
+            } catch (vmError) {
+              // VM READ HOST-FALLBACK GUARD
+              if (
+                this.context.config.runtimeMode === "local" &&
+                this.context.config.localIsolation === "vm"
+              ) {
+                throw vmError;
+              }
+
               content = await fs.readFile(confined, "utf8");
             }
             const slice = content.slice(offset, offset + limit);
@@ -197,7 +227,15 @@ When calling task_done, provide:
             let content: string;
             try {
               content = await this.context.conway.readFile(confined);
-            } catch {
+            } catch (vmError) {
+              // VM READ HOST-FALLBACK GUARD
+              if (
+                this.context.config.runtimeMode === "local" &&
+                this.context.config.localIsolation === "vm"
+              ) {
+                throw vmError;
+              }
+
               content = await fs.readFile(confined, "utf8");
             }
             if (!content.includes(search)) {
@@ -206,7 +244,15 @@ When calling task_done, provide:
             const patched = content.replace(search, replace);
             try {
               await this.context.conway.writeFile(confined, patched);
-            } catch {
+            } catch (vmError) {
+              // VM PATCH HOST-FALLBACK GUARD
+              if (
+                this.context.config.runtimeMode === "local" &&
+                this.context.config.localIsolation === "vm"
+              ) {
+                throw vmError;
+              }
+
               await fs.writeFile(confined, patched, "utf8");
             }
             return `Patched ${filePath}: replaced ${search.length} chars with ${replace.length} chars`;
@@ -231,6 +277,35 @@ When calling task_done, provide:
           if (typeof confined !== "string") {
             return confined.error;
           }
+          // VM LIST DIRECTORY
+          if (
+            this.context.config.runtimeMode === "local" &&
+            this.context.config.localIsolation === "vm"
+          ) {
+            const relative =
+              path.posix.relative(this.context.allowedEditRoot, confined) || ".";
+
+            const quoted =
+              "'" + relative.replace(/'/g, "'\"'\"'") + "'";
+
+            try {
+              const result = await this.context.conway.exec(
+                `ls -la -- ${quoted}`,
+                30_000,
+              );
+
+              if (result.exitCode !== 0) {
+                return `list error: ${result.stderr || "VM ls failed"}`;
+              }
+
+              return result.stdout || "(empty directory)";
+            } catch (error) {
+              return `list error: ${
+                error instanceof Error ? error.message : String(error)
+              }`;
+            }
+          }
+
           try {
             const entries = await fs.readdir(confined, { withFileTypes: true });
             return entries.map((entry) => `${entry.isDirectory() ? "dir" : entry.isFile() ? "file" : "other"}\t${entry.name}`).join("\n") || "(empty directory)";

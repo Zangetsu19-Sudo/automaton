@@ -184,7 +184,17 @@ When calling task_done, provide:
           try {
             await this.context.conway.writeFile(confined, content);
             return `Wrote ${content.length} bytes to ${confined}`;
-          } catch {
+          } catch (vmError) {
+            // GENERAL VM WRITE HOST-FALLBACK GUARD
+            if (
+              this.context.config.runtimeMode === "local" &&
+              this.context.config.localIsolation === "vm"
+            ) {
+              return `write error: VM write failed; host fallback disabled: ${
+                vmError instanceof Error ? vmError.message : String(vmError)
+              }`;
+            }
+
             try {
               await fs.mkdir(path.dirname(confined), { recursive: true });
               await fs.writeFile(confined, content, "utf8");
@@ -217,7 +227,17 @@ When calling task_done, provide:
           try {
             const content = await this.context.conway.readFile(confined);
             return content.slice(0, MAX_READ_SIZE) || "(empty file)";
-          } catch {
+          } catch (vmError) {
+            // GENERAL VM READ HOST-FALLBACK GUARD
+            if (
+              this.context.config.runtimeMode === "local" &&
+              this.context.config.localIsolation === "vm"
+            ) {
+              return `read error: VM read failed; host fallback disabled: ${
+                vmError instanceof Error ? vmError.message : String(vmError)
+              }`;
+            }
+
             try {
               const content = await fs.readFile(confined, "utf8");
               return content.slice(0, MAX_READ_SIZE) || "(empty file)";

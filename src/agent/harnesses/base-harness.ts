@@ -103,6 +103,8 @@ export abstract class BaseHarness implements AgentHarness {
     let consecutiveInferenceErrors = 0;
     let finalOutput = "";
     let finalSuccess = true;
+    // TEXT ONLY RESPONSE LIMIT
+    let consecutiveTextOnlyResponses = 0;
 
     while (true) {
       this.checkBudget();
@@ -141,6 +143,8 @@ export abstract class BaseHarness implements AgentHarness {
       );
 
       if (response.toolCalls && response.toolCalls.length > 0) {
+        // RESET TEXT ONLY COUNTER
+        consecutiveTextOnlyResponses = 0;
         this.messages.push({
           role: "assistant",
           content: response.content || "",
@@ -184,16 +188,26 @@ export abstract class BaseHarness implements AgentHarness {
               }
               logger.info(`[${this.id}] ${tool.name} → ${output.slice(0, 120)}`);
 
-              if (tool.name === "write_file" || tool.name === "patch_file") {
+              // SUCCESSFUL ARTIFACT EVIDENCE
+              // A failed write/patch must never count toward completion.
+              const successfulArtifact =
+                (tool.name === "write_file" &&
+                  /^Wrote \d+ bytes to /i.test(output)) ||
+                (tool.name === "patch_file" &&
+                  /^Patched /i.test(output));
+
+              if (successfulArtifact) {
                 try {
-                  const parsedArgs = typeof toolCall.function.arguments === "string"
-                    ? JSON.parse(toolCall.function.arguments)
-                    : toolCall.function.arguments;
+                  const parsedArgs =
+                    typeof toolCall.function.arguments === "string"
+                      ? JSON.parse(toolCall.function.arguments)
+                      : toolCall.function.arguments;
+
                   if (typeof parsedArgs.path === "string") {
                     this.artifacts.push(parsedArgs.path);
                   }
                 } catch {
-                  // ignore artifact tracking parse errors
+                  // Ignore artifact argument parsing failures.
                 }
               }
 
@@ -247,6 +261,18 @@ export abstract class BaseHarness implements AgentHarness {
       logger.info(
         `[${this.id}] Text-only response on turn ${this.context.budget.turnsUsed}: ${finalOutput.slice(0, 200)}`,
       );
+
+      // TEXT ONLY FAILURE ENFORCEMENT
+      consecutiveTextOnlyResponses++;
+
+      if (consecutiveTextOnlyResponses >= 2) {
+        finalSuccess = false;
+        finalOutput =
+          "Worker produced two consecutive prose-only responses without " +
+          "executing a valid tool call. Task failed so the orchestrator can " +
+          "retry or choose a different strategy.";
+        break;
+      }
 
       this.messages.push({
         role: "assistant",
