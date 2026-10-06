@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Automaton Tool System
  *
  * Defines all tools the automaton can call, with self-preservation guards.
@@ -26,7 +26,7 @@ import { safeBrowserFetch, validateBrowserUrl } from "../browser/safe-fetch.js";
 
 const logger = createLogger("tools");
 
-// ─── Path Confinement ─────────────────────────────────────────
+// â”€â”€â”€ Path Confinement â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // write_file is restricted to the sandbox home directory tree.
 // The sandbox home is /root for both local and remote execution.
 const SANDBOX_HOME = "/root";
@@ -65,7 +65,7 @@ const EXTERNAL_SOURCE_TOOLS = new Set([
   "check_social_inbox",
 ]);
 
-// ─── Self-Preservation Guard ───────────────────────────────────
+// â”€â”€â”€ Self-Preservation Guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Defense-in-depth: policy engine (command.forbidden_patterns rule) is the primary guard.
 // This inline check is kept as a secondary safety net in case the policy engine is bypassed.
 
@@ -114,11 +114,11 @@ function isForbiddenCommand(command: string, sandboxId: string): string | null {
   return null;
 }
 
-// ─── Built-in Tools ────────────────────────────────────────────
+// â”€â”€â”€ Built-in Tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
   return [
-    // ── VM/Sandbox Tools ──
+    // â”€â”€ VM/Sandbox Tools â”€â”€
     {
       name: "exec",
       description:
@@ -222,7 +222,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
         try {
           return await ctx.conway.readFile(confined);
         } catch {
-          // Conway files/read API may be broken — fall back to exec(cat)
+          // Conway files/read API may be broken â€” fall back to exec(cat)
           const result = await ctx.conway.exec(
             `cat ${escapeShellArg(confined)}`,
             30_000,
@@ -270,7 +270,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
     },
 
-    // ── Browser / Public Web Tools ──
+    // â”€â”€ Browser / Public Web Tools â”€â”€
     {
       name: "browser_fetch",
       description:
@@ -392,19 +392,26 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
     },
 
-    // ── Conway API Tools ──
+    // â”€â”€ Conway API Tools â”€â”€
     {
       name: "check_credits",
-      description: "Check your current Conway compute credit balance.",
-      category: "conway",
+      description: "Check your current survival compute credit balance.",
+      category: "financial",
       riskLevel: "safe",
       parameters: { type: "object", properties: {} },
       execute: async (_args, ctx) => {
+        if (ctx.config.runtimeMode === "local") {
+          const stored = ctx.db.getKV("local_treasury_cents");
+          const configured = ctx.config.localTreasuryCents ?? 500;
+          const balance = Number(stored ?? configured);
+          return `Local treasury balance: ${(balance / 100).toFixed(2)} (${balance} cents)`;
+        }
+
         const balance = await ctx.conway.getCreditsBalance();
-        return `Credit balance: $${(balance / 100).toFixed(2)} (${balance} cents)`;
+        return `Credit balance: ${(balance / 100).toFixed(2)} (${balance} cents)`;
       },
     },
-    {
+{
       name: "check_usdc_balance",
       description: "Check your on-chain USDC balance.",
       category: "conway",
@@ -550,7 +557,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
     },
 
-    // ── Self-Modification Tools ──
+    // â”€â”€ Self-Modification Tools â”€â”€
     {
       name: "edit_own_file",
       description:
@@ -730,11 +737,11 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
           : `Failed to install ${pkg}: ${result.stderr}`;
       },
     },
-    // ── Self-Mod: Upstream Awareness ──
+    // â”€â”€ Self-Mod: Upstream Awareness â”€â”€
     {
       name: "review_upstream_changes",
       description:
-        "ALWAYS call this before pull_upstream. Shows every upstream commit with its full diff. Read each one carefully — decide per-commit whether to accept or skip. Use pull_upstream with a specific commit hash to cherry-pick only what you want.",
+        "ALWAYS call this before pull_upstream. Shows every upstream commit with its full diff. Read each one carefully â€” decide per-commit whether to accept or skip. Use pull_upstream with a specific commit hash to cherry-pick only what you want.",
       category: "self_mod",
       riskLevel: "caution",
       parameters: { type: "object", properties: {} },
@@ -760,7 +767,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
     {
       name: "pull_upstream",
       description:
-        "Apply upstream changes and rebuild. You MUST call review_upstream_changes first. Prefer cherry-picking individual commits by hash over pulling everything — only pull all if you've reviewed every commit and want them all.",
+        "Apply upstream changes and rebuild. You MUST call review_upstream_changes first. Prefer cherry-picking individual commits by hash over pulling everything â€” only pull all if you've reviewed every commit and want them all.",
       category: "self_mod",
       riskLevel: "dangerous",
       parameters: {
@@ -805,7 +812,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
         try {
           await run("npm install --ignore-scripts && npm run build");
         } catch (err: any) {
-          return `${appliedSummary} — but rebuild failed: ${err.message}. The code is applied but not compiled.`;
+          return `${appliedSummary} â€” but rebuild failed: ${err.message}. The code is applied but not compiled.`;
         }
 
         // Log modification
@@ -880,7 +887,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
     },
 
-    // ── Survival Tools ──
+    // â”€â”€ Survival Tools â”€â”€
     {
       name: "sleep",
       description:
@@ -1023,7 +1030,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Self-Mod: Update Genesis Prompt ──
+    // â”€â”€ Self-Mod: Update Genesis Prompt â”€â”€
     {
       name: "update_genesis_prompt",
       description:
@@ -1085,7 +1092,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Self-Mod: Install MCP Server ──
+    // â”€â”€ Self-Mod: Install MCP Server â”€â”€
     {
       name: "install_mcp_server",
       description: "Install an MCP server to extend your capabilities.",
@@ -1140,7 +1147,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Financial: Transfer Credits ──
+    // â”€â”€ Financial: Transfer Credits â”€â”€
     {
       name: "transfer_credits",
       description: "Transfer Conway compute credits to another address.",
@@ -1188,7 +1195,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Skills Tools ──
+    // â”€â”€ Skills Tools â”€â”€
     {
       name: "install_skill",
       description: "Install a skill from a git repo, URL, or create one.",
@@ -1342,7 +1349,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Git Tools ──
+    // â”€â”€ Git Tools â”€â”€
     {
       name: "git_status",
       description: "Show git status for a repository.",
@@ -1537,7 +1544,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Registry Tools ──
+    // â”€â”€ Registry Tools â”€â”€
     {
       name: "register_erc8004",
       description:
@@ -2022,7 +2029,7 @@ Model: ${ctx.inference.getDefaultModel()}
             return `Child ${child.name} started and healthy.`;
           } else {
             lifecycle.transition(child.id, "failed", "process did not start");
-            return `Child ${child.name} failed to start — process exited immediately. Check /root/.automaton/agent.log`;
+            return `Child ${child.name} failed to start â€” process exited immediately. Check /root/.automaton/agent.log`;
           }
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
@@ -2129,7 +2136,7 @@ Model: ${ctx.inference.getDefaultModel()}
 
     // === Phase 3.2: Social & Registry Tools ===
 
-    // ── Social / Messaging Tools ──
+    // â”€â”€ Social / Messaging Tools â”€â”€
     {
       name: "send_message",
       description:
@@ -2173,7 +2180,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Model Discovery (enhanced with Phase 2.3 tier routing + pricing) ──
+    // â”€â”€ Model Discovery (enhanced with Phase 2.3 tier routing + pricing) â”€â”€
     {
       name: "list_models",
       description:
@@ -2193,7 +2200,7 @@ Model: ${ctx.inference.getDefaultModel()}
           if (rows.length > 0) {
             const lines = rows.map(
               (r: any) =>
-                `${r.modelId} (${r.provider}) — tier: ${r.tierMinimum} | cost: ${r.costPer1kInput}/${r.costPer1kOutput} per 1k (in/out, hundredths of cents) | ctx: ${r.contextWindow} | tools: ${r.supportsTools ? "yes" : "no"} | ${r.enabled ? "enabled" : "disabled"}`,
+                `${r.modelId} (${r.provider}) â€” tier: ${r.tierMinimum} | cost: ${r.costPer1kInput}/${r.costPer1kOutput} per 1k (in/out, hundredths of cents) | ctx: ${r.contextWindow} | tools: ${r.supportsTools ? "yes" : "no"} | ${r.enabled ? "enabled" : "disabled"}`,
             );
             return `Model Registry (${rows.length} models):\n${lines.join("\n")}`;
           }
@@ -2203,7 +2210,7 @@ Model: ${ctx.inference.getDefaultModel()}
         const models = await ctx.conway.listModels();
         const lines = models.map(
           (m) =>
-            `${m.id} (${m.provider}) — $${m.pricing.inputPerMillion}/$${m.pricing.outputPerMillion} per 1M tokens (in/out)`,
+            `${m.id} (${m.provider}) â€” $${m.pricing.inputPerMillion}/$${m.pricing.outputPerMillion} per 1M tokens (in/out)`,
         );
         return `Available models:\n${lines.join("\n")}`;
       },
@@ -2317,7 +2324,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Domain Tools ──
+    // â”€â”€ Domain Tools â”€â”€
     {
       name: "search_domains",
       description: "Search for available domain names and get pricing.",
@@ -2603,7 +2610,7 @@ Model: ${ctx.inference.getDefaultModel()}
         return history
           .map(
             (h) =>
-              `v${h.version} [${h.changeSource}] ${h.createdAt}${h.changeReason ? ` — ${h.changeReason}` : ""}`,
+              `v${h.version} [${h.changeSource}] ${h.createdAt}${h.changeReason ? ` â€” ${h.changeReason}` : ""}`,
           )
           .join("\n");
       },
@@ -2868,7 +2875,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── x402 Payment Tool ──
+    // â”€â”€ x402 Payment Tool â”€â”€
     {
       name: "x402_fetch",
       description:
@@ -3001,7 +3008,7 @@ Model: ${ctx.inference.getDefaultModel()}
         }
 
         // Cap active goals to prevent accumulation.
-        // Only 1 goal at a time — the orchestrator processes goals sequentially.
+        // Only 1 goal at a time â€” the orchestrator processes goals sequentially.
         if (activeGoals.length >= 1) {
           const current = activeGoals[0];
           return (
@@ -3403,7 +3410,7 @@ function createInstalledToolExecutor(tool: {
       // MCP tools would be executed via MCP protocol
       return `MCP tool ${tool.name} invoked with args: ${JSON.stringify(args)}`;
     }
-    // Generic installed tool — execute via sandbox shell if command is configured
+    // Generic installed tool â€” execute via sandbox shell if command is configured
     const command = tool.config?.command as string | undefined;
     if (command) {
       const result = await ctx.conway.exec(
@@ -3480,7 +3487,7 @@ export async function executeTool(
         arguments: args,
         result: "",
         durationMs: Date.now() - startTime,
-        error: `Policy denied: ${decision.reasonCode} — ${decision.humanMessage}`,
+        error: `Policy denied: ${decision.reasonCode} â€” ${decision.humanMessage}`,
       };
     }
   }
@@ -3560,3 +3567,5 @@ export async function executeTool(
 function escapeShellArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
+
+
