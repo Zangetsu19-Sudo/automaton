@@ -106,6 +106,12 @@ export abstract class BaseHarness implements AgentHarness {
     // TEXT ONLY RESPONSE LIMIT
     let consecutiveTextOnlyResponses = 0;
 
+    // CHEAP TOOL-CALL RECOVERY
+    // Normal coding/reasoning stays on the fast/coder model.
+    // If that model narrates instead of acting, use the cheap model
+    // for one corrective tool-selection turn.
+    let nextInferenceTier: "fast" | "cheap" = "fast";
+
     while (true) {
       this.checkBudget();
 
@@ -116,10 +122,11 @@ export abstract class BaseHarness implements AgentHarness {
       let response: { content: string; toolCalls?: InferenceToolCall[] };
       try {
         response = await this.context.inference.chat({
-          tier: "fast",
+          tier: nextInferenceTier,
           messages: this.messages,
           tools: toolDefs,
           toolChoice: "auto",
+          maxTokens: nextInferenceTier === "cheap" ? 512 : undefined,
         });
         consecutiveInferenceErrors = 0;
       } catch (error) {
@@ -145,6 +152,7 @@ export abstract class BaseHarness implements AgentHarness {
       if (response.toolCalls && response.toolCalls.length > 0) {
         // RESET TEXT ONLY COUNTER
         consecutiveTextOnlyResponses = 0;
+        nextInferenceTier = "fast";
         this.messages.push({
           role: "assistant",
           content: response.content || "",
@@ -264,6 +272,10 @@ export abstract class BaseHarness implements AgentHarness {
 
       // TEXT ONLY FAILURE ENFORCEMENT
       consecutiveTextOnlyResponses++;
+
+      // The expensive model failed to emit a valid tool action.
+      // Use qwen2.5:3b for the immediate corrective turn.
+      nextInferenceTier = "cheap";
 
       if (consecutiveTextOnlyResponses >= 2) {
         finalSuccess = false;
