@@ -246,6 +246,16 @@ When calling task_done, provide:
         execute: async (args) => {
           const summary = args.summary as string;
           const success = args.success !== false;
+
+          // CODING COMPLETION EVIDENCE GUARD
+          if (success && this.artifacts.length === 0) {
+            throw new Error(
+              "Cannot report successful coding completion: no file was created or modified. " +
+              "Use write_file or patch_file to perform actual implementation first. " +
+              "Then verify the work before calling task_done. " +
+              "If implementation is impossible, call task_done with success=false."
+            );
+          }
           return `TASK_COMPLETE:${success ? "SUCCESS" : "FAILURE"}:${summary}`;
         },
       },
