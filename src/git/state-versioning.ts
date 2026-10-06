@@ -1,49 +1,43 @@
 /**
  * State Versioning
  *
- * Version control the automaton's own state files (~/.automaton/).
+ * Version control the automaton's runtime-local state files (.automaton/).
  * Every self-modification triggers a git commit with a descriptive message.
- * The automaton's entire identity history is version-controlled and replayable.
+ * The automaton's identity history remains version-controlled and replayable.
  */
 
-import type { ConwayClient, AutomatonDatabase } from "../types.js";
+import type { ConwayClient } from "../types.js";
 import { gitInit, gitCommit, gitStatus, gitLog } from "./tools.js";
 
-const AUTOMATON_DIR = "~/.automaton";
-
-function resolveHome(p: string): string {
-  const home = process.env.HOME || "/root";
-  if (p.startsWith("~")) {
-    return `${home}${p.slice(1)}`;
-  }
-  return p;
-}
+// This path is intentionally relative. ConwayClient sets the execution cwd to
+// the active runtime root (/root remotely, local workspace root locally, or the
+// configured VM workspace root). Keeping it relative prevents controller-host
+// paths such as C:\\Users\\... from leaking into Linux guest commands.
+const AUTOMATON_DIR = ".automaton";
 
 /**
- * Initialize git repo for the automaton's state directory.
+ * Initialize git repo for the automaton's runtime-local state directory.
  * Creates .gitignore to exclude sensitive files.
  */
 export async function initStateRepo(
   conway: ConwayClient,
 ): Promise<void> {
-  const dir = resolveHome(AUTOMATON_DIR);
+  const dir = AUTOMATON_DIR;
 
-  // Check if already initialized
   const checkResult = await conway.exec(
     `test -d ${dir}/.git && echo "exists" || echo "nope"`,
     5000,
   );
+  const exists = checkResult.stdout.trim() === "exists";
 
-  if (checkResult.stdout.trim() === "exists") {
-    return;
+  if (!exists) {
+    await gitInit(conway, dir);
   }
 
-  // Initialize
-  await gitInit(conway, dir);
-
-  // Create .gitignore for sensitive files
+  // Keep sensitive controller/runtime files out of state history.
   const gitignore = `# Sensitive files - never commit
 wallet.json
+automaton.json
 config.json
 state.db
 state.db-wal
@@ -52,17 +46,18 @@ logs/
 *.log
 *.err
 `;
-
   await conway.writeFile(`${dir}/.gitignore`, gitignore);
 
-  // Configure git user
+  // Always ensure repository identity exists. A previous initialization may
+  // have created .git before failing its first commit.
   await conway.exec(
-    `cd ${dir} && git config user.name "Automaton" && git config user.email "automaton@conway.tech"`,
+    `cd ${dir} && git config user.name "Automaton" && git config user.email "automaton@local"`,
     5000,
   );
 
-  // Initial commit
-  await gitCommit(conway, dir, "genesis: automaton state repository initialized");
+  if (!exists) {
+    await gitCommit(conway, dir, "genesis: automaton state repository initialized");
+  }
 }
 
 /**
@@ -74,17 +69,15 @@ export async function commitStateChange(
   description: string,
   category: string = "state",
 ): Promise<string> {
-  const dir = resolveHome(AUTOMATON_DIR);
+  const dir = AUTOMATON_DIR;
 
-  // Check if there are changes
   const status = await gitStatus(conway, dir);
   if (status.clean) {
     return "No changes to commit";
   }
 
   const message = `${category}: ${description}`;
-  const result = await gitCommit(conway, dir, message);
-  return result;
+  return gitCommit(conway, dir, message);
 }
 
 /**
@@ -139,6 +132,5 @@ export async function getStateHistory(
   conway: ConwayClient,
   limit: number = 20,
 ) {
-  const dir = resolveHome(AUTOMATON_DIR);
-  return gitLog(conway, dir, limit);
+  return gitLog(conway, AUTOMATON_DIR, limit);
 }
