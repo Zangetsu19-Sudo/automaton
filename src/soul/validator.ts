@@ -92,6 +92,32 @@ export function validateSoul(soul: SoulModel): SoulValidationResult {
     errors.push(`Too many values (${soul.values.length}, max ${LIMITS.values})`);
   }
 
+  // SOUL SEMANTIC QUALITY GUARD
+  // Reject placeholder or low-information identity mutations.
+  if (soul.values.length < 3) {
+    errors.push(
+      `Too few values (${soul.values.length}, minimum 3). Values must describe stable principles.`,
+    );
+  }
+
+  const lowInformationSoulItem =
+    /^(?:new|updated?|default|test|testing|placeholder|temporary|temp|tbd|none|n\/a)(?:\s+(?:value|values|guideline|guidelines|boundary|boundaries|content|text))?\.?$/i;
+
+  for (const value of soul.values) {
+    const normalized = value.trim();
+
+    if (
+      normalized.length < 10 ||
+      lowInformationSoulItem.test(normalized)
+    ) {
+      errors.push(
+        `Low-information soul value rejected: "${normalized.slice(0, 80)}"`,
+      );
+      break;
+    }
+  }
+
+
   if (soul.behavioralGuidelines.length > LIMITS.behavioralGuidelines) {
     errors.push(
       `Too many behavioral guidelines (${soul.behavioralGuidelines.length}, max ${LIMITS.behavioralGuidelines})`,
