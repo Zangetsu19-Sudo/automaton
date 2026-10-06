@@ -121,7 +121,12 @@ export async function runAgentLoop(
     return ![
       "update_soul",
       "update_genesis_prompt",
-    ].includes(tool.name);
+          // LOCAL WORKING-MEMORY GOAL GUARD
+      // create_goal is the authoritative orchestrator goal API.
+      // Hide the legacy working-memory goal API from the local parent.
+      "set_goal",
+      "complete_goal",
+].includes(tool.name);
   });
   const toolContext: ToolContext = {
     identity,
