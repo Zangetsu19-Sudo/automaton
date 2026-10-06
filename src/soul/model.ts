@@ -1,5 +1,5 @@
-/**
- * Soul Model — Data model, parser, writer for structured SOUL.md
+﻿/**
+ * Soul Model â€” Data model, parser, writer for structured SOUL.md
  *
  * Supports both legacy (unstructured markdown) and soul/v1 (YAML frontmatter + structured markdown) formats.
  * Phase 2.1: Soul System Redesign
@@ -7,23 +7,24 @@
 
 import fs from "fs";
 import path from "path";
+import os from "node:os";
 import crypto from "crypto";
 import type BetterSqlite3 from "better-sqlite3";
 import type { SoulModel } from "../types.js";
 import { createLogger } from "../observability/logger.js";
 const logger = createLogger("soul");
 
-// ─── Constants ──────────────────────────────────────────────────
+// â”€â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const SOUL_FORMAT = "soul/v1" as const;
 
-// ─── Hash Utility ───────────────────────────────────────────────
+// â”€â”€â”€ Hash Utility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function createHash(content: string): string {
   return crypto.createHash("sha256").update(content).digest("hex");
 }
 
-// ─── Genesis Alignment ──────────────────────────────────────────
+// â”€â”€â”€ Genesis Alignment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Compute alignment between current soul and genesis prompt.
@@ -59,7 +60,7 @@ export function computeGenesisAlignment(
   return Math.min(1, Math.max(0, (jaccard + recall) / 2));
 }
 
-// ─── Parser ─────────────────────────────────────────────────────
+// â”€â”€â”€ Parser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Parse SOUL.md content into a structured SoulModel.
@@ -172,7 +173,7 @@ function parseLegacy(content: string, contentHash: string): SoulModel {
   };
 }
 
-// ─── Section Parser ─────────────────────────────────────────────
+// â”€â”€â”€ Section Parser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function parseSections(body: string): Record<string, string> {
   const sections: Record<string, string> = {};
@@ -207,7 +208,7 @@ function parseList(text: string): string[] {
     .filter(Boolean);
 }
 
-// ─── Writer ─────────────────────────────────────────────────────
+// â”€â”€â”€ Writer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Write a SoulModel back to SOUL.md format (soul/v1).
@@ -277,7 +278,7 @@ export function writeSoulMd(soul: SoulModel): string {
   return frontmatter + "\n\n" + sections.join("\n\n") + "\n";
 }
 
-// ─── Default Soul ───────────────────────────────────────────────
+// â”€â”€â”€ Default Soul â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Create a default soul from a genesis prompt.
@@ -326,7 +327,7 @@ export function createDefaultSoul(
   return soul;
 }
 
-// ─── Load Current Soul ──────────────────────────────────────────
+// â”€â”€â”€ Load Current Soul â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Load the current soul from SOUL.md file.
@@ -337,7 +338,7 @@ export function loadCurrentSoul(
   soulPath?: string,
 ): SoulModel | null {
   try {
-    const home = process.env.HOME || "/root";
+    const home = os.homedir();
     const resolvedPath = soulPath || path.join(home, ".automaton", "SOUL.md");
     if (!fs.existsSync(resolvedPath)) return null;
     const content = fs.readFileSync(resolvedPath, "utf-8");
@@ -347,3 +348,4 @@ export function loadCurrentSoul(
     return null;
   }
 }
+

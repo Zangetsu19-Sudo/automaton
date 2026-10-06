@@ -2563,6 +2563,18 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
     {
+      name: "self_reflection_cycle",
+      description: "Run the soul reflection pipeline using recent turns, tool usage, relationships, financial activity, and genesis alignment.",
+      category: "self_mod",
+      riskLevel: "safe",
+      parameters: { type: "object", properties: {} },
+      execute: async (_args, ctx) => {
+        const { reflectOnSoul } = await import("../soul/reflection.js");
+        const reflection = await reflectOnSoul(ctx.db.raw);
+        return JSON.stringify(reflection, null, 2);
+      },
+    },
+    {
       name: "view_soul",
       description: "View your current soul state (structured model).",
       category: "self_mod",
@@ -3567,5 +3579,7 @@ export async function executeTool(
 function escapeShellArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
+
+
 
 
