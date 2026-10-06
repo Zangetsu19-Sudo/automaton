@@ -3020,6 +3020,42 @@ Model: ${ctx.inference.getDefaultModel()}
         if (!title) return "Error: goal title cannot be empty.";
         if (!description) return "Error: goal description cannot be empty.";
 
+        // AUTONOMOUS REVENUE GOAL GUARD
+        // In local survival mode, reject speculative/hype-driven revenue plans
+        // before they enter the orchestration database.
+        if (ctx.config.runtimeMode === "local") {
+          const proposal = [title, description, strategy ?? ""]
+            .join(" ")
+            .toLowerCase();
+
+          const blockedRevenuePatterns: Array<[RegExp, string]> = [
+            [/\bnfts?\b|non[- ]fungible|nft collection|mint(?:ing)? nft/i,
+              "NFT creation or monetization"],
+            [/\bmemecoins?\b|meme coin|token issuance|launch(?:ing)? a token/i,
+              "speculative token issuance"],
+            [/crypto trading|day trading|forex trading|options trading/i,
+              "speculative trading"],
+            [/\bgambling\b|sports betting|casino strategy/i,
+              "gambling"],
+            [/airdrop farming|yield farming/i,
+              "speculative crypto farming"],
+          ];
+
+          for (const [pattern, reason] of blockedRevenuePatterns) {
+            if (pattern.test(proposal)) {
+              return (
+                "GOAL REJECTED: " + reason + " is not an acceptable autonomous " +
+                "revenue strategy for the local $5 survival experiment. " +
+                "Create a DIFFERENT goal based on direct value-for-payment work " +
+                "that can be executed with currently available capabilities. " +
+                "Prefer useful software, research, services, automation, or an " +
+                "original digital deliverable. Preserve capital. Do not call " +
+                "list_goals again; call create_goal with a substantially different proposal."
+              );
+            }
+          }
+        }
+
         // Dedup: reject if a similar active goal already exists
         const activeGoals = getActiveGoals(ctx.db.raw);
         const titleLower = title.toLowerCase();
