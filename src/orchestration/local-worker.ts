@@ -76,6 +76,19 @@ export class LocalWorkerPool {
       })
       .finally(() => {
         this.activeWorkers.delete(workerId);
+
+        // Local workers are ephemeral. Once execution ends they must not
+        // remain eligible for future task assignment.
+        try {
+          this.config.db.prepare(
+            "UPDATE children SET status = 'dead' WHERE address = ?",
+          ).run(`local://${workerId}`);
+        } catch (error) {
+          logger.warn("Failed to retire completed local worker", {
+            workerId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       });
 
     this.activeWorkers.set(workerId, { promise: workerPromise, abortController });
