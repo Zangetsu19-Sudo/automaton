@@ -76,17 +76,35 @@ export function setGoal(
   db: Database,
   args: { sessionId: string; content: string; priority?: number },
 ): string {
+  // SET GOAL RUNTIME VALIDATION
+  const content =
+    typeof args.content === "string" ? args.content.trim() : "";
+
+  if (!content) {
+    return "Failed to set goal: content is required and must be a non-empty string.";
+  }
+
+  const priority = args.priority ?? 0.8;
+
+  if (!Number.isFinite(priority) || priority < 0 || priority > 1) {
+    return "Failed to set goal: priority must be between 0 and 1.";
+  }
+
   try {
     const working = new WorkingMemoryManager(db);
+
     const id = working.add({
       sessionId: args.sessionId,
-      content: args.content,
+      content,
       contentType: "goal",
-      priority: args.priority ?? 0.8,
+      priority,
     });
-    return `Goal set: "${args.content}" (id: ${id}, priority: ${args.priority ?? 0.8})`;
+
+    return `Goal set: "${content}" (id: ${id}, priority: ${priority})`;
   } catch (error) {
-    return `Failed to set goal: ${error instanceof Error ? error.message : error}`;
+    return `Failed to set goal: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
   }
 }
 
