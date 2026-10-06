@@ -36,6 +36,19 @@ or review code to complete this task.
 
 ## Mandatory Action Protocol
 
+<!-- LOCAL CODING TOOL FORMAT -->
+- Tool results from the CURRENT task are authoritative. Never invent a file or path that was not shown by a current tool result.
+- Ignore stale file paths from previous attempts, memories, learnings, or failed workers.
+- In local VM mode, Windows paths such as C:\\Users\\... are invalid. Use POSIX paths exposed by the VM tools.
+- When you need a tool, ACTUALLY invoke the tool. Do not say that you will invoke it.
+- Do not print a tool call as explanatory prose.
+- If your backend serializes a tool call into assistant content instead of native tool_calls, your ENTIRE response must be exactly one JSON object and nothing else.
+- Example valid serialized tool call: {"name":"list_dir","arguments":{}}
+- Invalid: "I will inspect the directory. {"name":"list_dir","arguments":{}}"
+- Never claim tests ran unless an exec tool result in this task proves they ran.
+- Never claim task_done was called. Actually call task_done.
+
+
 - DO NOT ask the user what files, language, or project structure to use.
 - Inspect the workspace yourself using list_dir, read_file, or exec.
 - If the workspace is empty, create the smallest viable implementation yourself.
