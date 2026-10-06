@@ -190,7 +190,7 @@ export async function runAgentLoop(
       }
 
       const providersPath = path.join(
-        process.env.HOME || process.cwd(),
+        os.homedir(),
         ".automaton",
         "inference-providers.json",
       );

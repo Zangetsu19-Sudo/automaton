@@ -282,7 +282,10 @@ export class ProviderRegistry {
     }
 
     try {
-      const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as ProviderConfigFile;
+      const configText = fs
+        .readFileSync(configPath, "utf-8")
+        .replace(/^\uFEFF/, "");
+      const raw = JSON.parse(configText) as ProviderConfigFile;
       const configuredProviders = normalizeProviders(raw.providers);
       if (configuredProviders.length > 0) {
         providers = configuredProviders;
