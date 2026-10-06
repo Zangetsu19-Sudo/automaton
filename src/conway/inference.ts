@@ -17,6 +17,7 @@ import type {
 import { ResilientHttpClient } from "./http-client.js";
 
 const INFERENCE_TIMEOUT_MS = 60_000;
+const OLLAMA_INFERENCE_TIMEOUT_MS = 300_000;
 
 interface InferenceClientOptions {
   apiUrl: string;
@@ -52,8 +53,25 @@ export function createInferenceClient(
   const httpClient = new ResilientHttpClient({
     baseTimeout: INFERENCE_TIMEOUT_MS,
     retryableStatuses: [429, 500, 502, 503, 504],
+    allowHttpOnLoopback: false,
+  });
+
+  // LOCAL OLLAMA INFERENCE ISOLATION
+  // CPU-local generations can legitimately take several minutes.
+  // They must not share failure/circuit state with remote providers.
+  //
+  // No internal retries: retrying a 5-minute generation at the HTTP
+  // layer can multiply latency and trip circuit state from one logical
+  // inference request. Higher-level agent retry logic already exists.
+  const ollamaHttpClient = new ResilientHttpClient({
+    baseTimeout: OLLAMA_INFERENCE_TIMEOUT_MS,
+    maxRetries: 0,
+    retryableStatuses: [429, 500, 502, 503, 504],
+    circuitBreakerThreshold: 20,
+    circuitBreakerResetMs: 5_000,
     allowHttpOnLoopback: isLoopbackHttpUrl(ollamaBaseUrl),
   });
+
   let currentModel = options.defaultModel;
   let maxTokens = options.maxTokens;
 
@@ -125,7 +143,7 @@ export function createInferenceClient(
       apiUrl: openAiLikeApiUrl,
       apiKey: openAiLikeApiKey,
       backend,
-      httpClient,
+      httpClient: backend === "ollama" ? ollamaHttpClient : httpClient,
     });
   };
 
@@ -218,7 +236,10 @@ async function chatViaOpenAiCompatible(params: {
           : params.apiKey,
     },
     body: JSON.stringify(params.body),
-    timeout: INFERENCE_TIMEOUT_MS,
+    timeout:
+      params.backend === "ollama"
+        ? OLLAMA_INFERENCE_TIMEOUT_MS
+        : INFERENCE_TIMEOUT_MS,
   });
 
   if (!resp.ok) {
