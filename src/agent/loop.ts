@@ -334,6 +334,7 @@ export async function runAgentLoop(
         },
         config: {
           ...config,
+          getLocalWorkerCount: () => initializedWorkerPool.getActiveCount(),
           spawnAgent: async (task: any) => {
             // Try Conway sandbox spawn first (production)
             try {

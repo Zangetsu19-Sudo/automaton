@@ -401,7 +401,7 @@ export class Orchestrator {
         description: goal.description,
         status: "pending",
         assignedTo: null,
-        agentRole: "generalist",
+        agentRole: inferFallbackRole(goal),
         priority: 50,
         dependencies: [],
         result: null,
@@ -460,7 +460,7 @@ export class Orchestrator {
         tasks: [{
           title: goal.title,
           description: goal.description,
-          agentRole: "generalist",
+          agentRole: inferFallbackRole(goal),
           dependencies: [],
           estimatedCostCents: 200,
           priority: 50,
@@ -480,7 +480,7 @@ export class Orchestrator {
         tasks: [{
           title: goal.title,
           description: goal.description,
-          agentRole: "generalist",
+          agentRole: inferFallbackRole(goal),
           dependencies: [],
           estimatedCostCents: 200,
           priority: 50,
@@ -591,7 +591,20 @@ export class Orchestrator {
     const ready = getReadyTasks(this.params.db)
       .filter((task) => task.goalId === goal.id);
 
+    // LOCAL WORKER SERIALIZATION
+    // CPU-only Ollama should run one inference worker at a time.
     for (const task of ready) {
+      if (this.params.config?.runtimeMode === "local") {
+        const getLocalWorkerCount =
+          this.params.config?.getLocalWorkerCount;
+
+        if (
+          typeof getLocalWorkerCount === "function" &&
+          getLocalWorkerCount() >= 1
+        ) {
+          break;
+        }
+      }
       try {
         const assignment = await this.matchTaskToAgent(task);
         assignTask(this.params.db, task.id, assignment.agentAddress);
@@ -787,7 +800,7 @@ export class Orchestrator {
         tasks: [{
           title: goal.title,
           description: goal.description,
-          agentRole: "generalist",
+          agentRole: inferFallbackRole(goal),
           dependencies: [],
           estimatedCostCents: 200,
           priority: 50,
@@ -806,7 +819,7 @@ export class Orchestrator {
         tasks: [{
           title: goal.title,
           description: goal.description,
-          agentRole: "generalist",
+          agentRole: inferFallbackRole(goal),
           dependencies: [],
           estimatedCostCents: 200,
           priority: 50,
@@ -1282,6 +1295,41 @@ function asPhase(value: unknown): ExecutionPhase | null {
   }
 
   return null;
+}
+
+// DETERMINISTIC FALLBACK ROLE ROUTING
+function inferFallbackRole(
+  goal: { title: string; description: string },
+): string {
+  const proposal = (goal.title + " " + goal.description).toLowerCase();
+
+  const softwareMarkers = [
+    " app",
+    "application",
+    " api",
+    "server",
+    "website",
+    "web app",
+    "software",
+    "code",
+    "coding",
+    "programming",
+    "script",
+    "node.js",
+    "javascript",
+    "typescript",
+    "python",
+    "backend",
+    "frontend",
+    "database",
+    "cli",
+    "plugin",
+    "extension",
+  ];
+
+  return softwareMarkers.some((marker) => proposal.includes(marker))
+    ? "developer"
+    : "generalist";
 }
 
 function normalizeError(error: unknown): Error {

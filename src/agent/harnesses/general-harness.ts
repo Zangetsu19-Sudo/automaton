@@ -149,6 +149,13 @@ When calling task_done, provide:
             const result = await this.context.conway.exec(command, timeoutMs);
             return formatExecResult(result.stdout ?? "", result.stderr ?? "");
           } catch {
+            // VM EXEC HOST-FALLBACK GUARD
+            if (
+              this.context.config.runtimeMode === "local" &&
+              this.context.config.localIsolation === "vm"
+            ) {
+              return "exec error: VM execution failed; host fallback is disabled.";
+            }
             return localExec(command, timeoutMs);
           }
         },
@@ -445,13 +452,28 @@ function confineToWorkspace(
   filePath: string,
   allowedRoot: string,
 ): string | { error: string } {
-  const expanded = filePath.startsWith("~")
-    ? path.join(allowedRoot, filePath.slice(1))
-    : filePath;
-  const resolved = path.resolve(allowedRoot, expanded);
-  if (resolved !== allowedRoot && !resolved.startsWith(allowedRoot + path.sep)) {
-    return { error: `Blocked: path "${filePath}" resolves outside workspace (${allowedRoot})` };
+  // VM-AWARE WORKSPACE CONFINEMENT
+  const usePosix = allowedRoot.startsWith("/");
+  const pathApi = usePosix ? path.posix : path;
+
+  if (usePosix && /^[a-zA-Z]:[\\/]/.test(filePath)) {
+    return {
+      error: "Blocked: Windows host path supplied to VM worker: " + filePath,
+    };
   }
+
+  const root = pathApi.resolve(allowedRoot);
+  const expanded = filePath.startsWith("~")
+    ? pathApi.join(root, filePath.slice(1))
+    : filePath;
+  const resolved = pathApi.resolve(root, expanded);
+
+  if (resolved !== root && !resolved.startsWith(root + pathApi.sep)) {
+    return {
+      error: "Blocked: path \"" + filePath + "\" resolves outside workspace (" + root + ")",
+    };
+  }
+
   return resolved;
 }
 

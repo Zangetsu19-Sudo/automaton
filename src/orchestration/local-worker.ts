@@ -115,7 +115,12 @@ export class LocalWorkerPool {
   private async runWorker(workerId: string, task: TaskNode, signal: AbortSignal): Promise<void> {
     const harness = this.config.harnessRegistry.createForRole(task.agentRole);
     const workspace = new AgentWorkspace(task.goalId);
-    const allowedEditRoot = path.resolve(this.config.allowedEditRoot ?? DEFAULT_ALLOWED_EDIT_ROOT);
+    // LOCAL VM WORKSPACE BOUNDARY
+    const allowedEditRoot =
+      this.config.config.runtimeMode === "local" &&
+      this.config.config.localIsolation === "vm"
+        ? this.config.config.localVm?.workspaceRoot || "/home/automaton/workspace"
+        : path.resolve(this.config.allowedEditRoot ?? DEFAULT_ALLOWED_EDIT_ROOT);
     const workerIdentity = createWorkerIdentity(this.config.identity, workerId, task.agentRole);
     const context: HarnessContext = {
       workspaceRoot: workspace.basePath,
@@ -148,6 +153,13 @@ export class LocalWorkerPool {
       inputSource: this.config.inputSource,
     };
 
+    // LOCAL CPU WORKER TIME BUDGET
+    if (this.config.config.runtimeMode === "local") {
+      context.budget.timeoutMs = Math.max(
+        context.budget.timeoutMs,
+        900_000,
+      );
+    }
     if (this.config.maxTurns) {
       context.budget.maxTurns = this.config.maxTurns;
     }
