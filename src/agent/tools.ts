@@ -2507,7 +2507,6 @@ Model: ${ctx.inference.getDefaultModel()}
         const reason = typeof args.reason === "string" ? args.reason : "";
 
         const allowedSections = [
-          "corePurpose",
           "values",
           "behavioralGuidelines",
           "personality",
@@ -3598,6 +3597,7 @@ export async function executeTool(
 function escapeShellArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
+
 
 
 

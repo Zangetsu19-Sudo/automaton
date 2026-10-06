@@ -839,8 +839,12 @@ Your current financial and system status is already provided in this context. Do
 
 Continue useful work:
 - If an active goal exists, advance it.
-- If no active goal exists, choose one concrete, lawful, low-risk task that advances your genesis purpose and begin it.
+- If no active goal exists, choose one concrete, lawful, low-risk task that advances your genesis purpose and create it with create_goal.
+- If list_goals reports no active goals, your next useful action should normally be create_goal.
+- Your genesis purpose/corePurpose is already established by your creator. Do NOT rewrite or initialize it.
+- Do not use soul updates as startup work or as a substitute for pursuing a goal.
 - Prefer creating genuine value over maintenance/status checks.
 - Do not spend money merely to stay busy.`;
 }
+
 
