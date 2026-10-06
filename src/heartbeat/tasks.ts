@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Built-in Heartbeat Tasks
  *
  * These tasks run on the heartbeat schedule even while the agent sleeps.
@@ -113,12 +113,12 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
     if (tier === "critical" && credits === 0) {
       const zeroSince = taskCtx.db.getKV("zero_credits_since");
       if (!zeroSince) {
-        // First time seeing zero — start the grace period
+        // First time seeing zero â€” start the grace period
         taskCtx.db.setKV("zero_credits_since", now);
       } else {
         const elapsed = Date.now() - new Date(zeroSince).getTime();
         if (elapsed >= DEAD_GRACE_PERIOD_MS) {
-          // Grace period expired — transition to dead
+          // Grace period expired â€” transition to dead
           taskCtx.db.setAgentState("dead");
           logger.warn("Agent entering dead state after 1 hour at zero credits", {
             zeroSince,
@@ -131,7 +131,7 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
         }
       }
     } else {
-      // Credits are above zero — clear the grace period timer
+      // Credits are above zero â€” clear the grace period timer
       taskCtx.db.deleteKV("zero_credits_since");
     }
 
@@ -178,7 +178,7 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
 
       if (result?.success) {
         logger.info(
-          `Auto-topup successful: $${result.amountUsd} USD → ${result.creditsCentsAdded} credit cents`,
+          `Auto-topup successful: $${result.amountUsd} USD â†’ ${result.creditsCentsAdded} credit cents`,
         );
         return {
           shouldWake: true,
@@ -186,7 +186,7 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
         };
       }
 
-      // Topup failed — wake the agent so it can handle it manually
+      // Topup failed â€” wake the agent so it can handle it manually
       const errMsg = result?.error ?? "unknown error";
       logger.warn(`Auto-topup failed: ${errMsg}`);
       return {
@@ -256,7 +256,7 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
         };
         taskCtx.db.insertInboxMessage(sanitizedMsg);
         taskCtx.db.setKV(`inbox_seen_${msg.id}`, "1");
-        // Only count non-blocked messages toward wake threshold —
+        // Only count non-blocked messages toward wake threshold â€”
         // blocked messages are stored for audit but should not wake
         // the agent (prevents injection spam from draining credits).
         if (!sanitizedContent.blocked) {
@@ -402,7 +402,7 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
   health_check: async (_ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
     // Check that the sandbox is healthy
     try {
-      const result = await taskCtx.conway.exec("echo alive", 5000);
+      const result = await taskCtx.conway.exec("echo alive", 20_000);
       if (result.exitCode !== 0) {
         // Only wake on first failure, not repeated failures
         const prevStatus = taskCtx.db.getKV("health_check_status");
@@ -410,7 +410,7 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
           taskCtx.db.setKV("health_check_status", "failing");
           return {
             shouldWake: true,
-            message: "Health check failed: sandbox exec returned non-zero",
+            message: `Health check failed: sandbox exec exit=${result.exitCode}${result.stderr ? ` stderr=${result.stderr.slice(0, 200)}` : ""}`,
           };
         }
         return { shouldWake: false };
@@ -428,7 +428,7 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
       return { shouldWake: false };
     }
 
-    // Health check passed — clear failure state
+    // Health check passed â€” clear failure state
     taskCtx.db.setKV("health_check_status", "ok");
     taskCtx.db.setKV("last_health_check", new Date().toISOString());
     return { shouldWake: false };
@@ -749,3 +749,5 @@ async function createHealthMonitor(taskCtx: HeartbeatLegacyContext): Promise<Col
 
   return new HealthMonitor(taskCtx.db, tracker, funding, messaging);
 }
+
+
