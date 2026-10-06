@@ -631,12 +631,30 @@ export async function runAgentLoop(
         ).get(identity.address);
 
         if (
+          config.runtimeMode === "local" &&
+          orchestratorTick.phase === "executing" &&
+          !hasSelfAssignedParentTask &&
+          localWorkersActive > 0
+        ) {
+          log(
+            config,
+            "[ORCHESTRATOR] Local delegated work active. Yielding parent inference while worker runs.",
+          );
+
+          // Keep this runAgentLoop alive so the LocalWorkerPool remains authoritative.
+          // Do not run parent inference concurrently against the same Ollama backend.
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+          continue;
+        }
+
+        if (
+          config.runtimeMode !== "local" &&
           orchestratorTick.phase === "executing" &&
           orchestratorTick.tasksAssigned === 0 &&
           orchestratorTick.tasksCompleted === 0 &&
           orchestratorTick.tasksFailed === 0 &&
           !hasSelfAssignedParentTask &&
-          (orchestratorTick.agentsActive > 0 || localWorkersActive > 0)
+          orchestratorTick.agentsActive > 0
         ) {
           log(
             config,
