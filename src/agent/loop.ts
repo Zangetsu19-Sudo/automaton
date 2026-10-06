@@ -423,6 +423,7 @@ export async function runAgentLoop(
   let loopWarningPattern: string | null = null;
   let idleToolTurns = 0;
   let activeGoalNoActionRetries = 0;
+  let noGoalNoActionRetries = 0;
   // blockedGoalTurns removed — replaced by immediate sleep + exponential backoff
 
   // Drain any stale wake events from before this loop started,
@@ -1024,7 +1025,30 @@ export async function runAgentLoop(
               .get(),
           );
 
-        if (hasActiveGoal && activeGoalNoActionRetries < 2) {
+        if (
+          !hasActiveGoal &&
+          config.runtimeMode === "local" &&
+          noGoalNoActionRetries < 2
+        ) {
+          noGoalNoActionRetries++;
+          activeGoalNoActionRetries = 0;
+
+          log(
+            config,
+            `[RECOVER] No active goal. Requesting autonomous goal creation ${noGoalNoActionRetries}/2.`,
+          );
+
+          pendingInput = {
+            content:
+              "AUTONOMOUS GOAL RECOVERY: You have no active goals, but your mission is ongoing. " +
+              "Your genesis mission is: " + config.genesisPrompt + "\n\n" +
+              "You MUST call create_goal now. Create one concrete, actionable goal that directly advances " +
+              "lawful, honest, voluntary revenue generation and survival. Prefer a goal capable of producing " +
+              "real revenue with little or no upfront capital. Do NOT call list_goals again. Do NOT merely " +
+              "describe a goal in text. Do NOT sleep. Your next response must use create_goal.",
+            source: "system",
+          };
+        } else if (hasActiveGoal && activeGoalNoActionRetries < 2) {
           activeGoalNoActionRetries++;
 
           log(
@@ -1056,6 +1080,7 @@ export async function runAgentLoop(
         }
       } else if (response.toolCalls && response.toolCalls.length > 0) {
         activeGoalNoActionRetries = 0;
+        noGoalNoActionRetries = 0;
       }
 
       consecutiveErrors = 0;
