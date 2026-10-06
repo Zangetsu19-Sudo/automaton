@@ -2502,9 +2502,28 @@ Model: ${ctx.inference.getDefaultModel()}
       },
       execute: async (args, ctx) => {
         const { updateSoul } = await import("../soul/tools.js");
-        const section = args.section as string;
-        const content = args.content as string;
-        const reason = args.reason as string;
+        const section = typeof args.section === "string" ? args.section : "";
+        const content = typeof args.content === "string" ? args.content : "";
+        const reason = typeof args.reason === "string" ? args.reason : "";
+
+        const allowedSections = [
+          "corePurpose",
+          "values",
+          "behavioralGuidelines",
+          "personality",
+          "boundaries",
+          "strategy",
+        ];
+
+        if (!allowedSections.includes(section)) {
+          return `Soul update rejected: section must be one of ${allowedSections.join(", ")}.`;
+        }
+        if (!content.trim()) {
+          return "Soul update rejected: content is required.";
+        }
+        if (!reason.trim()) {
+          return "Soul update rejected: reason is required.";
+        }
 
         const updates: Record<string, unknown> = {};
         if (
@@ -3579,6 +3598,8 @@ export async function executeTool(
 function escapeShellArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
+
+
 
 
 
