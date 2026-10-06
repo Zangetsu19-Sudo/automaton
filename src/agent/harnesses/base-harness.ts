@@ -239,12 +239,43 @@ export abstract class BaseHarness implements AgentHarness {
         continue;
       }
 
-      finalOutput = response.content || "Task completed.";
-      finalSuccess = true;
+      // TEXT-ONLY WORKER RESPONSE GUARD
+      // A worker task is not complete merely because the model emitted text.
+      // Workers are explicitly required to call task_done.
+      finalOutput = response.content || "";
+
       logger.info(
         `[${this.id}] Text-only response on turn ${this.context.budget.turnsUsed}: ${finalOutput.slice(0, 200)}`,
       );
-      break;
+
+      this.messages.push({
+        role: "assistant",
+        content: finalOutput,
+      });
+
+      const textOnlyTurnCheck = this.loopDetector.endTurn();
+
+      if (textOnlyTurnCheck.blocked) {
+        finalSuccess = false;
+        finalOutput =
+          textOnlyTurnCheck.reason ||
+          "Worker repeatedly responded without a valid tool action.";
+        break;
+      }
+
+      this.messages.push({
+        role: "system",
+        content:
+          (textOnlyTurnCheck.reason
+            ? textOnlyTurnCheck.reason + "\n\n"
+            : "") +
+          "No valid tool call was detected. Do not merely describe an action. " +
+          "Use one of the advertised tools to make concrete progress. " +
+          "When the task is finished, you MUST call task_done. " +
+          "If the task cannot be completed, call task_done with success=false and explain why.",
+      });
+
+      continue;
     }
 
     return {

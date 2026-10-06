@@ -49,7 +49,7 @@ import type { InboxMessageRow } from "../state/database.js";
 import { ulid } from "ulid";
 import { ModelRegistry } from "../inference/registry.js";
 import { InferenceBudgetTracker } from "../inference/budget.js";
-import { InferenceRouter } from "../inference/router.js";
+import { InferenceRouter, parseContentToolCall } from "../inference/router.js";
 import { MemoryRetriever } from "../memory/retrieval.js";
 import { MemoryIngestionPipeline } from "../memory/ingestion.js";
 import { DEFAULT_MEMORY_BUDGET } from "../types.js";
@@ -106,6 +106,9 @@ export async function runAgentLoop(
     // implements those against the local machine when sandboxId is empty.
     if (tool.category === "conway") return false;
     if (tool.category === "replication") return false;
+    // LOCAL REGISTRY TOOL GUARD
+    // Local mode currently has no configured public registry/on-chain identity path.
+    if (tool.category === "registry") return false;
     if (tool.name === "topup_credits" || tool.name === "transfer_credits") {
       return false;
     }
@@ -264,9 +267,25 @@ export async function runAgentLoop(
                   temperature: params.temperature,
                 });
 
+                // LOCAL WORKER CONTENT TOOL PROMOTION
+                // Ollama models sometimes serialize a valid tool call as
+                // strict JSON content instead of native tool_calls.
+                const nativeToolCalls =
+                  Array.isArray(response.toolCalls) &&
+                  response.toolCalls.length > 0
+                    ? response.toolCalls
+                    : undefined;
+
+                const promotedToolCalls = nativeToolCalls
+                  ? undefined
+                  : parseContentToolCall(
+                      response.message.content || "",
+                      params.tools,
+                    );
+
                 return {
                   content: response.message.content,
-                  toolCalls: response.toolCalls,
+                  toolCalls: nativeToolCalls ?? promotedToolCalls,
                 };
               },
             }
