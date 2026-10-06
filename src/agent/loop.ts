@@ -1040,12 +1040,20 @@ export async function runAgentLoop(
 
           pendingInput = {
             content:
-              "AUTONOMOUS GOAL RECOVERY: You have no active goals, but your mission is ongoing. " +
+              "AUTONOMOUS GOAL RECOVERY: You have no active goals, but your mission is ongoing.\n\n" +
               "Your genesis mission is: " + config.genesisPrompt + "\n\n" +
-              "You MUST call create_goal now. Create one concrete, actionable goal that directly advances " +
-              "lawful, honest, voluntary revenue generation and survival. Prefer a goal capable of producing " +
-              "real revenue with little or no upfront capital. Do NOT call list_goals again. Do NOT merely " +
-              "describe a goal in text. Do NOT sleep. Your next response must use create_goal.",
+              "You MUST call create_goal now. Create exactly one concrete goal.\n\n" +
+              "GOAL QUALITY RULES:\n" +
+              "- The goal must be executable with capabilities that are actually available right now.\n" +
+              "- Prefer direct value-for-payment work: a useful service, software utility, research deliverable, or original digital product.\n" +
+              "- Preserve the $5 treasury. Prefer zero-cost execution and do not spend money merely to test an idea.\n" +
+              "- Do not assume an account, marketplace, payment rail, login, social account, email account, or outbound messaging channel exists unless a current tool provides it.\n" +
+              "- If no authorized sales/payment channel exists yet, build and validate a genuinely sellable offer or asset and clearly identify the missing channel instead of pretending revenue was earned.\n" +
+              "- Avoid speculative asset schemes, NFT/token issuance, gambling, trading, get-rich-quick strategies, fake scarcity, or hype-driven monetization.\n" +
+              "- Use only original, licensed, public-domain, or otherwise authorized content. Do not monetize third-party or user-generated content without permission.\n" +
+              "- No spam, deceptive marketing, fake reviews, unsolicited mass outreach, unauthorized access, or manipulation.\n" +
+              "- The goal must have a measurable deliverable and a plausible path toward a first voluntary paying customer.\n\n" +
+              "Do NOT call list_goals again. Do NOT merely describe a goal in text. Your next response must use create_goal.",
             source: "system",
           };
         } else if (hasActiveGoal && activeGoalNoActionRetries < 2) {
