@@ -21,6 +21,7 @@ export abstract class BaseHarness implements AgentHarness {
   protected loopDetector!: LoopDetector;
   protected messages: ChatMessage[] = [];
   protected artifacts: string[] = [];
+  protected lastExecutionSucceeded = false;
 
   async initialize(task: TaskNode, context: HarnessContext): Promise<void> {
     this.task = task;
@@ -35,6 +36,7 @@ export abstract class BaseHarness implements AgentHarness {
       { role: "user", content: this.buildTaskPrompt() },
     ];
     this.artifacts = [];
+    this.lastExecutionSucceeded = false;
   }
 
   abstract getToolDefs(): HarnessTool[];
@@ -103,6 +105,14 @@ export abstract class BaseHarness implements AgentHarness {
     let consecutiveInferenceErrors = 0;
     let finalOutput = "";
     let finalSuccess = true;
+    // TEXT ONLY RESPONSE LIMIT
+    let consecutiveTextOnlyResponses = 0;
+
+    // CHEAP TOOL-CALL RECOVERY
+    // Normal coding/reasoning stays on the fast/coder model.
+    // If that model narrates instead of acting, use the cheap model
+    // for one corrective tool-selection turn.
+    let nextInferenceTier: "fast" | "cheap" = "fast";
 
     while (true) {
       this.checkBudget();
@@ -113,14 +123,17 @@ export abstract class BaseHarness implements AgentHarness {
 
       let response: { content: string; toolCalls?: InferenceToolCall[] };
       try {
-        response = await this.context.inference.chat({
-          tier: "fast",
+        response = await this.inferWithinBudget({
+          tier: nextInferenceTier,
           messages: this.messages,
           tools: toolDefs,
           toolChoice: "auto",
+          maxTokens: nextInferenceTier === "cheap" ? 512 : undefined,
         });
         consecutiveInferenceErrors = 0;
       } catch (error) {
+        this.checkBudget();
+        this.context.abortSignal.throwIfAborted();
         consecutiveInferenceErrors++;
         const message = error instanceof Error ? error.message : String(error);
         logger.error(
@@ -141,6 +154,9 @@ export abstract class BaseHarness implements AgentHarness {
       );
 
       if (response.toolCalls && response.toolCalls.length > 0) {
+        // RESET TEXT ONLY COUNTER
+        consecutiveTextOnlyResponses = 0;
+        nextInferenceTier = "fast";
         this.messages.push({
           role: "assistant",
           content: response.content || "",
@@ -150,6 +166,8 @@ export abstract class BaseHarness implements AgentHarness {
         let taskDone: { summary: string; success: boolean } | null = null;
 
         for (const toolCall of response.toolCalls) {
+          this.checkBudget();
+          this.context.abortSignal.throwIfAborted();
           const loopResult = this.loopDetector.recordToolCall(
             toolCall.function.name,
             toolCall.function.arguments,
@@ -184,17 +202,32 @@ export abstract class BaseHarness implements AgentHarness {
               }
               logger.info(`[${this.id}] ${tool.name} → ${output.slice(0, 120)}`);
 
-              if (tool.name === "write_file" || tool.name === "patch_file") {
+              // SUCCESSFUL ARTIFACT EVIDENCE
+              // A failed write/patch must never count toward completion.
+              const successfulArtifact =
+                (tool.name === "write_file" &&
+                  /^Wrote \d+ bytes to /i.test(output)) ||
+                (tool.name === "patch_file" &&
+                  /^Patched /i.test(output));
+
+              if (successfulArtifact) {
+                this.lastExecutionSucceeded = false;
                 try {
-                  const parsedArgs = typeof toolCall.function.arguments === "string"
-                    ? JSON.parse(toolCall.function.arguments)
-                    : toolCall.function.arguments;
+                  const parsedArgs =
+                    typeof toolCall.function.arguments === "string"
+                      ? JSON.parse(toolCall.function.arguments)
+                      : toolCall.function.arguments;
+
                   if (typeof parsedArgs.path === "string") {
                     this.artifacts.push(parsedArgs.path);
                   }
                 } catch {
-                  // ignore artifact tracking parse errors
+                  // Ignore artifact argument parsing failures.
                 }
+              }
+
+              if (tool.name === "exec") {
+                this.lastExecutionSucceeded = /^Exit code: 0\n/.test(output);
               }
 
               if (tool.name === "task_done") {
@@ -239,12 +272,59 @@ export abstract class BaseHarness implements AgentHarness {
         continue;
       }
 
-      finalOutput = response.content || "Task completed.";
-      finalSuccess = true;
+      // TEXT-ONLY WORKER RESPONSE GUARD
+      // A worker task is not complete merely because the model emitted text.
+      // Workers are explicitly required to call task_done.
+      finalOutput = response.content || "";
+
       logger.info(
         `[${this.id}] Text-only response on turn ${this.context.budget.turnsUsed}: ${finalOutput.slice(0, 200)}`,
       );
-      break;
+
+      // TEXT ONLY FAILURE ENFORCEMENT
+      consecutiveTextOnlyResponses++;
+
+      // The expensive model failed to emit a valid tool action.
+      // Use qwen2.5:3b for the immediate corrective turn.
+      nextInferenceTier = "cheap";
+
+      if (consecutiveTextOnlyResponses >= 2) {
+        finalSuccess = false;
+        finalOutput =
+          "Worker produced two consecutive prose-only responses without " +
+          "executing a valid tool call. Task failed so the orchestrator can " +
+          "retry or choose a different strategy.";
+        break;
+      }
+
+      this.messages.push({
+        role: "assistant",
+        content: finalOutput,
+      });
+
+      const textOnlyTurnCheck = this.loopDetector.endTurn();
+
+      if (textOnlyTurnCheck.blocked) {
+        finalSuccess = false;
+        finalOutput =
+          textOnlyTurnCheck.reason ||
+          "Worker repeatedly responded without a valid tool action.";
+        break;
+      }
+
+      this.messages.push({
+        role: "system",
+        content:
+          (textOnlyTurnCheck.reason
+            ? textOnlyTurnCheck.reason + "\n\n"
+            : "") +
+          "No valid tool call was detected. Do not merely describe an action. " +
+          "Use one of the advertised tools to make concrete progress. " +
+          "When the task is finished, you MUST call task_done. " +
+          "If the task cannot be completed, call task_done with success=false and explain why.",
+      });
+
+      continue;
     }
 
     return {
@@ -254,6 +334,35 @@ export abstract class BaseHarness implements AgentHarness {
       costCents: this.context.budget.costUsedCents,
       duration: Date.now() - this.context.budget.startedAt,
     };
+  }
+
+  private async inferWithinBudget(
+    params: Parameters<HarnessContext["inference"]["chat"]>[0],
+  ): Promise<{ content: string; toolCalls?: InferenceToolCall[] }> {
+    const { budget, abortSignal } = this.context;
+    const controller = new AbortController();
+    const remaining = Math.max(1, budget.timeoutMs - (Date.now() - budget.startedAt));
+    const abort = () => controller.abort(new Error("Harness execution aborted by abort signal"));
+    abortSignal.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(() => controller.abort(new Error("Budget exhausted: inference timeout")), remaining);
+    let onAbort: () => void = () => {};
+    try {
+      if (abortSignal.aborted) abort();
+      const cancelled = new Promise<never>((_, reject) => {
+        onAbort = () => reject(controller.signal.reason);
+        controller.signal.addEventListener("abort", onAbort, { once: true });
+        if (controller.signal.aborted) onAbort();
+      });
+      controller.signal.throwIfAborted();
+      return await Promise.race([
+        this.context.inference.chat({ ...params, signal: controller.signal }),
+        cancelled,
+      ]);
+    } finally {
+      clearTimeout(timer);
+      abortSignal.removeEventListener("abort", abort);
+      controller.signal.removeEventListener("abort", onAbort);
+    }
   }
 
   private checkBudget(): void {

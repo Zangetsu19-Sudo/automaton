@@ -145,6 +145,45 @@ describe("agent/BaseHarness integration", () => {
     (context.db as any).close?.();
   });
 
+  it("aborts hung inference at the task deadline without retrying", async () => {
+    const context = createContext();
+    context.budget.timeoutMs = 30;
+    let signal: AbortSignal | undefined;
+    let calls = 0;
+    context.inference.chat = (params) => {
+      calls++;
+      signal = params.signal;
+      return new Promise(() => {});
+    };
+    const harness = new TestHarness();
+    await harness.initialize(createTask(), context);
+    try {
+      await expect(harness.execute()).rejects.toThrow(/Budget exhausted/);
+      expect(signal?.aborted).toBe(true);
+      expect(calls).toBe(1);
+      expect(context.budget.turnsUsed).toBe(0);
+    } finally { context.db.close(); }
+  });
+
+  it("cancels in-flight inference when the worker is stopped", async () => {
+    const context = createContext();
+    const controller = new AbortController();
+    context.abortSignal = controller.signal;
+    let signal: AbortSignal | undefined;
+    context.inference.chat = (params) => {
+      signal = params.signal;
+      queueMicrotask(() => controller.abort(new Error("worker stopped")));
+      return new Promise(() => {});
+    };
+    const harness = new TestHarness();
+    await harness.initialize(createTask(), context);
+    try {
+      await expect(harness.execute()).rejects.toThrow(/worker stopped/);
+      expect(signal?.aborted).toBe(true);
+      expect(context.budget.turnsUsed).toBe(0);
+    } finally { context.db.close(); }
+  });
+
   it("does not consume turn budget or reset per-turn state on inference retry", async () => {
     const harness = new TestHarness();
     const task = createTask();

@@ -5,6 +5,7 @@
  */
 
 import fs from "fs";
+import os from "node:os";
 import path from "path";
 import type { AutomatonConfig, TreasuryPolicy, ModelStrategyConfig, SoulConfig } from "./types.js";
 import { DEFAULT_CONFIG, DEFAULT_TREASURY_POLICY, DEFAULT_MODEL_STRATEGY_CONFIG, DEFAULT_SOUL_CONFIG } from "./types.js";
@@ -102,11 +103,12 @@ export function saveConfig(config: AutomatonConfig): void {
 }
 
 /**
- * Resolve ~ paths to absolute paths.
+ * Resolve ~ paths to absolute paths using Node's cross-platform home lookup.
  */
 export function resolvePath(p: string): string {
-  if (p.startsWith("~")) {
-    return path.join(process.env.HOME || "/root", p.slice(1));
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/") || p.startsWith("~\\")) {
+    return path.join(os.homedir(), p.slice(2));
   }
   return p;
 }
@@ -137,6 +139,10 @@ export function createConfig(params: {
     creatorMessage: params.creatorMessage,
     creatorAddress: params.creatorAddress,
     registeredWithConway: params.registeredWithConway,
+    runtimeMode: params.apiKey ? "conway" : "local",
+    localTreasuryCents: DEFAULT_CONFIG.localTreasuryCents ?? 500,
+    localSandboxRoot: DEFAULT_CONFIG.localSandboxRoot ?? "~/.automaton/workspace",
+    localIsolation: DEFAULT_CONFIG.localIsolation ?? "workspace",
     sandboxId: normalizedSandboxId,
     conwayApiUrl:
       DEFAULT_CONFIG.conwayApiUrl || "https://api.conway.tech",

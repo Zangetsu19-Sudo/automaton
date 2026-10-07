@@ -25,6 +25,7 @@ import type {
 } from "../types.js";
 import type { Database } from "better-sqlite3";
 import type { PolicyEngine } from "../agent/policy-engine.js";
+import { selectWorkerModelTier } from "../inference/role-tier-policy.js";
 
 const logger = createLogger("orchestration.local-worker");
 const DEFAULT_ALLOWED_EDIT_ROOT = process.cwd();
@@ -75,6 +76,19 @@ export class LocalWorkerPool {
       })
       .finally(() => {
         this.activeWorkers.delete(workerId);
+
+        // Local workers are ephemeral. Once execution ends they must not
+        // remain eligible for future task assignment.
+        try {
+          this.config.db.prepare(
+            "UPDATE children SET status = 'dead' WHERE address = ?",
+          ).run(`local://${workerId}`);
+        } catch (error) {
+          logger.warn("Failed to retire completed local worker", {
+            workerId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       });
 
     this.activeWorkers.set(workerId, { promise: workerPromise, abortController });
@@ -101,7 +115,12 @@ export class LocalWorkerPool {
   private async runWorker(workerId: string, task: TaskNode, signal: AbortSignal): Promise<void> {
     const harness = this.config.harnessRegistry.createForRole(task.agentRole);
     const workspace = new AgentWorkspace(task.goalId);
-    const allowedEditRoot = path.resolve(this.config.allowedEditRoot ?? DEFAULT_ALLOWED_EDIT_ROOT);
+    // LOCAL VM WORKSPACE BOUNDARY
+    const allowedEditRoot =
+      this.config.config.runtimeMode === "local" &&
+      this.config.config.localIsolation === "vm"
+        ? this.config.config.localVm?.workspaceRoot || "/home/automaton/workspace"
+        : path.resolve(this.config.allowedEditRoot ?? DEFAULT_ALLOWED_EDIT_ROOT);
     const workerIdentity = createWorkerIdentity(this.config.identity, workerId, task.agentRole);
     const context: HarnessContext = {
       workspaceRoot: workspace.basePath,
@@ -112,7 +131,11 @@ export class LocalWorkerPool {
       db: this.config.db,
       conway: this.config.conway,
       inference: {
-        chat: async (params) => this.config.inference.chat(params),
+        chat: async (params) =>
+          this.config.inference.chat({
+            ...params,
+            tier: selectWorkerModelTier(task.agentRole, params.tier),
+          }),
       },
       budget: createBudgetFromTask(task),
       wisdom: buildWisdomFromGoal(this.config.db, task.goalId, workspace),
@@ -130,6 +153,13 @@ export class LocalWorkerPool {
       inputSource: this.config.inputSource,
     };
 
+    // LOCAL CPU WORKER TIME BUDGET
+    if (this.config.config.runtimeMode === "local") {
+      context.budget.timeoutMs = Math.max(
+        context.budget.timeoutMs,
+        900_000,
+      );
+    }
     if (this.config.maxTurns) {
       context.budget.maxTurns = this.config.maxTurns;
     }

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Automaton Tool System
  *
  * Defines all tools the automaton can call, with self-preservation guards.
@@ -22,10 +22,11 @@ import type {
 import type { PolicyEngine } from "./policy-engine.js";
 import { sanitizeToolResult, sanitizeInput } from "./injection-defense.js";
 import { createLogger } from "../observability/logger.js";
+import { safeBrowserFetch, validateBrowserUrl } from "../browser/safe-fetch.js";
 
 const logger = createLogger("tools");
 
-// ─── Path Confinement ─────────────────────────────────────────
+// â”€â”€â”€ Path Confinement â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // write_file is restricted to the sandbox home directory tree.
 // The sandbox home is /root for both local and remote execution.
 const SANDBOX_HOME = "/root";
@@ -34,17 +35,22 @@ const SANDBOX_HOME = "/root";
  * Validate that a file path resolves to within the allowed root directory.
  * Returns the resolved absolute path, or an error string if out of bounds.
  */
-function confinePathToSandbox(filePath: string): string | { error: string } {
-  // Resolve ~ to SANDBOX_HOME
+function confinePathToSandbox(
+  filePath: string,
+  rootDir = SANDBOX_HOME,
+): string | { error: string } {
+  const home = process.env.HOME || process.env.USERPROFILE || process.cwd();
+  const expandedRoot = rootDir.startsWith("~")
+    ? nodePath.join(home, rootDir.slice(1))
+    : rootDir;
+  const root = nodePath.resolve(expandedRoot);
   const expanded = filePath.startsWith("~")
-    ? nodePath.join(SANDBOX_HOME, filePath.slice(1))
+    ? nodePath.join(root, filePath.slice(1))
     : filePath;
-  // Resolve to absolute (relative paths resolve against SANDBOX_HOME)
-  const resolved = nodePath.resolve(SANDBOX_HOME, expanded);
-  // Ensure the resolved path is within the sandbox home
-  if (resolved !== SANDBOX_HOME && !resolved.startsWith(SANDBOX_HOME + "/")) {
+  const resolved = nodePath.resolve(root, expanded);
+  if (resolved !== root && !resolved.startsWith(root + nodePath.sep)) {
     return {
-      error: `Blocked: write_file path "${filePath}" resolves to "${resolved}" which is outside the allowed directory (${SANDBOX_HOME}). Writes are confined to the sandbox home.`,
+      error: `Blocked: path "${filePath}" resolves to "${resolved}" which is outside the allowed directory (${root}).`,
     };
   }
   return resolved;
@@ -54,10 +60,12 @@ function confinePathToSandbox(filePath: string): string | { error: string } {
 const EXTERNAL_SOURCE_TOOLS = new Set([
   "exec",
   "web_fetch",
+  "browser_fetch",
+  "browser_render",
   "check_social_inbox",
 ]);
 
-// ─── Self-Preservation Guard ───────────────────────────────────
+// â”€â”€â”€ Self-Preservation Guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Defense-in-depth: policy engine (command.forbidden_patterns rule) is the primary guard.
 // This inline check is kept as a secondary safety net in case the policy engine is bypassed.
 
@@ -106,11 +114,11 @@ function isForbiddenCommand(command: string, sandboxId: string): string | null {
   return null;
 }
 
-// ─── Built-in Tools ────────────────────────────────────────────
+// â”€â”€â”€ Built-in Tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
   return [
-    // ── VM/Sandbox Tools ──
+    // â”€â”€ VM/Sandbox Tools â”€â”€
     {
       name: "exec",
       description:
@@ -159,7 +167,14 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       execute: async (args, ctx) => {
         const filePath = args.path as string;
         // Path confinement: restrict writes to sandbox home directory
-        const confined = confinePathToSandbox(filePath);
+        const confined = confinePathToSandbox(
+          filePath,
+          ctx.config.runtimeMode === "local"
+            ? ctx.config.localIsolation === "vm"
+              ? ctx.config.localVm?.workspaceRoot || "/home/automaton/workspace"
+              : ctx.config.localSandboxRoot || "~/.automaton/workspace"
+            : SANDBOX_HOME,
+        );
         if (typeof confined === "object") return confined.error;
         // Guard against overwriting protected files (same check as edit_own_file)
         const { isProtectedFile } = await import("../self-mod/code.js");
@@ -184,8 +199,17 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
       execute: async (args, ctx) => {
         const filePath = args.path as string;
+        const confined = confinePathToSandbox(
+          filePath,
+          ctx.config.runtimeMode === "local"
+            ? ctx.config.localIsolation === "vm"
+              ? ctx.config.localVm?.workspaceRoot || "/home/automaton/workspace"
+              : ctx.config.localSandboxRoot || "~/.automaton/workspace"
+            : SANDBOX_HOME,
+        );
+        if (typeof confined === "object") return confined.error;
         // Block reads of sensitive files (wallet, env, config secrets)
-        const basename = filePath.split("/").pop() || "";
+        const basename = confined.split(nodePath.sep).pop() || "";
         const sensitiveFiles = ["wallet.json", ".env", "automaton.json"];
         const sensitiveExtensions = [".key", ".pem"];
         if (
@@ -196,11 +220,11 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
           return "Blocked: Cannot read sensitive file. This protects credentials and secrets.";
         }
         try {
-          return await ctx.conway.readFile(filePath);
+          return await ctx.conway.readFile(confined);
         } catch {
-          // Conway files/read API may be broken — fall back to exec(cat)
+          // Conway files/read API may be broken â€” fall back to exec(cat)
           const result = await ctx.conway.exec(
-            `cat ${escapeShellArg(filePath)}`,
+            `cat ${escapeShellArg(confined)}`,
             30_000,
           );
           if (result.exitCode !== 0) {
@@ -246,19 +270,148 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
     },
 
-    // ── Conway API Tools ──
+    // â”€â”€ Browser / Public Web Tools â”€â”€
+    {
+      name: "browser_fetch",
+      description:
+        "Read a public HTTP/HTTPS page without cookies, login state, form submission, or private-network access. Returns textual content only.",
+      category: "browser",
+      riskLevel: "safe",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: "Public HTTP/HTTPS URL to fetch",
+          },
+          max_bytes: {
+            type: "number",
+            description: "Maximum response bytes to return (default 1000000)",
+          },
+        },
+        required: ["url"],
+      },
+      execute: async (args) => {
+        try {
+          const result = await safeBrowserFetch(args.url as string, {
+            maxBytes: typeof args.max_bytes === "number" ? args.max_bytes : undefined,
+          });
+          return [
+            `URL: ${result.url}`,
+            `Status: ${result.status}`,
+            `Content-Type: ${result.contentType || "unknown"}`,
+            `Truncated: ${result.truncated ? "yes" : "no"}`,
+            "",
+            result.body,
+          ].join("\n");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return `Browser fetch blocked/failed: ${message}`;
+        }
+      },
+    },
+
+    {
+      name: "browser_render",
+      description:
+        "Render a public web page with headless Chromium inside the dedicated VM. Read-only: no clicks, typing, downloads, cookies from the host, or login state.",
+      category: "browser",
+      riskLevel: "safe",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: "Public HTTP/HTTPS URL to render",
+          },
+          timeout: {
+            type: "number",
+            description: "Timeout in milliseconds (default 30000, max 60000)",
+          },
+        },
+        required: ["url"],
+      },
+      execute: async (args, ctx) => {
+        if (
+          ctx.config.runtimeMode !== "local" ||
+          ctx.config.localIsolation !== "vm"
+        ) {
+          return "Browser render requires localIsolation='vm'. Direct host browser execution is intentionally disabled.";
+        }
+
+        let url: URL;
+        try {
+          url = validateBrowserUrl(args.url as string);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return `Browser render blocked: ${message}`;
+        }
+
+        const timeout = Math.min(
+          60_000,
+          Math.max(5_000, Number(args.timeout) || 30_000),
+        );
+        const seconds = Math.max(5, Math.ceil(timeout / 1000));
+        const quotedUrl = escapeShellArg(url.toString());
+
+        const command = [
+          'BROWSER="$(command -v chromium || command -v chromium-browser || true)"',
+          'test -n "$BROWSER"',
+          `timeout ${seconds}s "$BROWSER"`,
+          "--headless=new",
+          "--disable-gpu",
+          "--disable-dev-shm-usage",
+          "--disable-background-networking",
+          "--disable-component-update",
+          "--disable-sync",
+          "--metrics-recording-only",
+          "--no-first-run",
+          "--no-default-browser-check",
+          "--proxy-server=http://127.0.0.1:3128",
+          '--user-data-dir="$HOME/browser-profile"',
+          "--dump-dom",
+          quotedUrl,
+        ].join(" ");
+
+        const result = await ctx.conway.exec(command, timeout + 5_000);
+        if (result.exitCode !== 0) {
+          return `Browser render failed: ${result.stderr || "Chromium exited with an error"}`;
+        }
+
+        const maxChars = 1_000_000;
+        const truncated = result.stdout.length > maxChars;
+        const body = result.stdout.slice(0, maxChars);
+        return [
+          `URL: ${url.toString()}`,
+          `Rendered-In: VM headless Chromium`,
+          `Private-network proxy: enabled`,
+          `Truncated: ${truncated ? "yes" : "no"}`,
+          "",
+          body,
+        ].join("\n");
+      },
+    },
+
+    // â”€â”€ Conway API Tools â”€â”€
     {
       name: "check_credits",
-      description: "Check your current Conway compute credit balance.",
-      category: "conway",
+      description: "Check your current survival compute credit balance.",
+      category: "financial",
       riskLevel: "safe",
       parameters: { type: "object", properties: {} },
       execute: async (_args, ctx) => {
+        if (ctx.config.runtimeMode === "local") {
+          const stored = ctx.db.getKV("local_treasury_cents");
+          const configured = ctx.config.localTreasuryCents ?? 500;
+          const balance = Number(stored ?? configured);
+          return `Local treasury balance: ${(balance / 100).toFixed(2)} (${balance} cents)`;
+        }
+
         const balance = await ctx.conway.getCreditsBalance();
-        return `Credit balance: $${(balance / 100).toFixed(2)} (${balance} cents)`;
+        return `Credit balance: ${(balance / 100).toFixed(2)} (${balance} cents)`;
       },
     },
-    {
+{
       name: "check_usdc_balance",
       description: "Check your on-chain USDC balance.",
       category: "conway",
@@ -404,7 +557,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
     },
 
-    // ── Self-Modification Tools ──
+    // â”€â”€ Self-Modification Tools â”€â”€
     {
       name: "edit_own_file",
       description:
@@ -584,11 +737,11 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
           : `Failed to install ${pkg}: ${result.stderr}`;
       },
     },
-    // ── Self-Mod: Upstream Awareness ──
+    // â”€â”€ Self-Mod: Upstream Awareness â”€â”€
     {
       name: "review_upstream_changes",
       description:
-        "ALWAYS call this before pull_upstream. Shows every upstream commit with its full diff. Read each one carefully — decide per-commit whether to accept or skip. Use pull_upstream with a specific commit hash to cherry-pick only what you want.",
+        "ALWAYS call this before pull_upstream. Shows every upstream commit with its full diff. Read each one carefully â€” decide per-commit whether to accept or skip. Use pull_upstream with a specific commit hash to cherry-pick only what you want.",
       category: "self_mod",
       riskLevel: "caution",
       parameters: { type: "object", properties: {} },
@@ -614,7 +767,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
     {
       name: "pull_upstream",
       description:
-        "Apply upstream changes and rebuild. You MUST call review_upstream_changes first. Prefer cherry-picking individual commits by hash over pulling everything — only pull all if you've reviewed every commit and want them all.",
+        "Apply upstream changes and rebuild. You MUST call review_upstream_changes first. Prefer cherry-picking individual commits by hash over pulling everything â€” only pull all if you've reviewed every commit and want them all.",
       category: "self_mod",
       riskLevel: "dangerous",
       parameters: {
@@ -659,7 +812,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
         try {
           await run("npm install --ignore-scripts && npm run build");
         } catch (err: any) {
-          return `${appliedSummary} — but rebuild failed: ${err.message}. The code is applied but not compiled.`;
+          return `${appliedSummary} â€” but rebuild failed: ${err.message}. The code is applied but not compiled.`;
         }
 
         // Log modification
@@ -734,7 +887,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
     },
 
-    // ── Survival Tools ──
+    // â”€â”€ Survival Tools â”€â”€
     {
       name: "sleep",
       description:
@@ -877,7 +1030,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Self-Mod: Update Genesis Prompt ──
+    // â”€â”€ Self-Mod: Update Genesis Prompt â”€â”€
     {
       name: "update_genesis_prompt",
       description:
@@ -939,7 +1092,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Self-Mod: Install MCP Server ──
+    // â”€â”€ Self-Mod: Install MCP Server â”€â”€
     {
       name: "install_mcp_server",
       description: "Install an MCP server to extend your capabilities.",
@@ -994,7 +1147,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Financial: Transfer Credits ──
+    // â”€â”€ Financial: Transfer Credits â”€â”€
     {
       name: "transfer_credits",
       description: "Transfer Conway compute credits to another address.",
@@ -1042,7 +1195,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Skills Tools ──
+    // â”€â”€ Skills Tools â”€â”€
     {
       name: "install_skill",
       description: "Install a skill from a git repo, URL, or create one.",
@@ -1196,7 +1349,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Git Tools ──
+    // â”€â”€ Git Tools â”€â”€
     {
       name: "git_status",
       description: "Show git status for a repository.",
@@ -1391,7 +1544,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Registry Tools ──
+    // â”€â”€ Registry Tools â”€â”€
     {
       name: "register_erc8004",
       description:
@@ -1876,7 +2029,7 @@ Model: ${ctx.inference.getDefaultModel()}
             return `Child ${child.name} started and healthy.`;
           } else {
             lifecycle.transition(child.id, "failed", "process did not start");
-            return `Child ${child.name} failed to start — process exited immediately. Check /root/.automaton/agent.log`;
+            return `Child ${child.name} failed to start â€” process exited immediately. Check /root/.automaton/agent.log`;
           }
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
@@ -1983,7 +2136,7 @@ Model: ${ctx.inference.getDefaultModel()}
 
     // === Phase 3.2: Social & Registry Tools ===
 
-    // ── Social / Messaging Tools ──
+    // â”€â”€ Social / Messaging Tools â”€â”€
     {
       name: "send_message",
       description:
@@ -2027,7 +2180,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Model Discovery (enhanced with Phase 2.3 tier routing + pricing) ──
+    // â”€â”€ Model Discovery (enhanced with Phase 2.3 tier routing + pricing) â”€â”€
     {
       name: "list_models",
       description:
@@ -2047,7 +2200,7 @@ Model: ${ctx.inference.getDefaultModel()}
           if (rows.length > 0) {
             const lines = rows.map(
               (r: any) =>
-                `${r.modelId} (${r.provider}) — tier: ${r.tierMinimum} | cost: ${r.costPer1kInput}/${r.costPer1kOutput} per 1k (in/out, hundredths of cents) | ctx: ${r.contextWindow} | tools: ${r.supportsTools ? "yes" : "no"} | ${r.enabled ? "enabled" : "disabled"}`,
+                `${r.modelId} (${r.provider}) â€” tier: ${r.tierMinimum} | cost: ${r.costPer1kInput}/${r.costPer1kOutput} per 1k (in/out, hundredths of cents) | ctx: ${r.contextWindow} | tools: ${r.supportsTools ? "yes" : "no"} | ${r.enabled ? "enabled" : "disabled"}`,
             );
             return `Model Registry (${rows.length} models):\n${lines.join("\n")}`;
           }
@@ -2057,7 +2210,7 @@ Model: ${ctx.inference.getDefaultModel()}
         const models = await ctx.conway.listModels();
         const lines = models.map(
           (m) =>
-            `${m.id} (${m.provider}) — $${m.pricing.inputPerMillion}/$${m.pricing.outputPerMillion} per 1M tokens (in/out)`,
+            `${m.id} (${m.provider}) â€” $${m.pricing.inputPerMillion}/$${m.pricing.outputPerMillion} per 1M tokens (in/out)`,
         );
         return `Available models:\n${lines.join("\n")}`;
       },
@@ -2171,7 +2324,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Domain Tools ──
+    // â”€â”€ Domain Tools â”€â”€
     {
       name: "search_domains",
       description: "Search for available domain names and get pricing.",
@@ -2349,9 +2502,27 @@ Model: ${ctx.inference.getDefaultModel()}
       },
       execute: async (args, ctx) => {
         const { updateSoul } = await import("../soul/tools.js");
-        const section = args.section as string;
-        const content = args.content as string;
-        const reason = args.reason as string;
+        const section = typeof args.section === "string" ? args.section : "";
+        const content = typeof args.content === "string" ? args.content : "";
+        const reason = typeof args.reason === "string" ? args.reason : "";
+
+        const allowedSections = [
+          "values",
+          "behavioralGuidelines",
+          "personality",
+          "boundaries",
+          "strategy",
+        ];
+
+        if (!allowedSections.includes(section)) {
+          return `Soul update rejected: section must be one of ${allowedSections.join(", ")}.`;
+        }
+        if (!content.trim()) {
+          return "Soul update rejected: content is required.";
+        }
+        if (!reason.trim()) {
+          return "Soul update rejected: reason is required.";
+        }
 
         const updates: Record<string, unknown> = {};
         if (
@@ -2410,6 +2581,18 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
     {
+      name: "self_reflection_cycle",
+      description: "Run the soul reflection pipeline using recent turns, tool usage, relationships, financial activity, and genesis alignment.",
+      category: "self_mod",
+      riskLevel: "safe",
+      parameters: { type: "object", properties: {} },
+      execute: async (_args, ctx) => {
+        const { reflectOnSoul } = await import("../soul/reflection.js");
+        const reflection = await reflectOnSoul(ctx.db.raw);
+        return JSON.stringify(reflection, null, 2);
+      },
+    },
+    {
       name: "view_soul",
       description: "View your current soul state (structured model).",
       category: "self_mod",
@@ -2457,7 +2640,7 @@ Model: ${ctx.inference.getDefaultModel()}
         return history
           .map(
             (h) =>
-              `v${h.version} [${h.changeSource}] ${h.createdAt}${h.changeReason ? ` — ${h.changeReason}` : ""}`,
+              `v${h.version} [${h.changeSource}] ${h.createdAt}${h.changeReason ? ` â€” ${h.changeReason}` : ""}`,
           )
           .join("\n");
       },
@@ -2722,7 +2905,7 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── x402 Payment Tool ──
+    // â”€â”€ x402 Payment Tool â”€â”€
     {
       name: "x402_fetch",
       description:
@@ -2837,6 +3020,74 @@ Model: ${ctx.inference.getDefaultModel()}
         if (!title) return "Error: goal title cannot be empty.";
         if (!description) return "Error: goal description cannot be empty.";
 
+        // AUTONOMOUS REVENUE GOAL GUARD
+        // In local survival mode, reject speculative/hype-driven revenue plans
+        // before they enter the orchestration database.
+        if (ctx.config.runtimeMode === "local") {
+          const proposal = [title, description, strategy ?? ""]
+            .join(" ")
+            .toLowerCase();
+
+          // AUTONOMOUS ECONOMIC GOAL REQUIREMENTS
+          // A root survival goal must describe value, an audience, and
+          // a plausible voluntary-payment path. Generic technical projects
+          // are tasks, not economic goals.
+          const hasPaymentPath =
+            /\b(revenue|income|paid|paying|payment|sell|sale|sales|charge|charging|price|pricing|subscription|commission|contract|purchase|buyer|customer|client|monetiz|earn)\w*\b/i.test(
+              proposal,
+            );
+
+          const hasAudience =
+            /\b(customer|client|buyer|user|business|businesses|developer|developers|creator|creators|freelancer|freelancers|seller|sellers|team|teams|organization|organizations|shop|shops|market|niche|audience)\w*\b/i.test(
+              proposal,
+            );
+
+          const hasDeliverable =
+            /\b(service|product|software|tool|utility|automation|website|application|app|research|report|analysis|template|plugin|script|dataset|design|development|deliverable)\w*\b/i.test(
+              proposal,
+            );
+
+          if (!hasPaymentPath || !hasAudience || !hasDeliverable) {
+            return (
+              "GOAL REJECTED: this is a technical activity, not yet an economic survival goal. " +
+              "Create a substantially different goal that explicitly identifies: " +
+              "(1) a useful product/service/deliverable, " +
+              "(2) a specific customer or user group with a problem, and " +
+              "(3) a plausible path to voluntary payment or first revenue. " +
+              "Do not create infrastructure merely for its own sake. " +
+              "Example shape: build a small useful tool for a specific customer segment, " +
+              "validate that they need it, package it as an offer, and pursue a lawful first sale."
+            );
+          }
+
+          const blockedRevenuePatterns: Array<[RegExp, string]> = [
+            [/\bnfts?\b|non[- ]fungible|nft collection|mint(?:ing)? nft/i,
+              "NFT creation or monetization"],
+            [/\bmemecoins?\b|meme coin|token issuance|launch(?:ing)? a token/i,
+              "speculative token issuance"],
+            [/crypto trading|day trading|forex trading|options trading/i,
+              "speculative trading"],
+            [/\bgambling\b|sports betting|casino strategy/i,
+              "gambling"],
+            [/airdrop farming|yield farming/i,
+              "speculative crypto farming"],
+          ];
+
+          for (const [pattern, reason] of blockedRevenuePatterns) {
+            if (pattern.test(proposal)) {
+              return (
+                "GOAL REJECTED: " + reason + " is not an acceptable autonomous " +
+                "revenue strategy for the local $5 survival experiment. " +
+                "Create a DIFFERENT goal based on direct value-for-payment work " +
+                "that can be executed with currently available capabilities. " +
+                "Prefer useful software, research, services, automation, or an " +
+                "original digital deliverable. Preserve capital. Do not call " +
+                "list_goals again; call create_goal with a substantially different proposal."
+              );
+            }
+          }
+        }
+
         // Dedup: reject if a similar active goal already exists
         const activeGoals = getActiveGoals(ctx.db.raw);
         const titleLower = title.toLowerCase();
@@ -2855,7 +3106,7 @@ Model: ${ctx.inference.getDefaultModel()}
         }
 
         // Cap active goals to prevent accumulation.
-        // Only 1 goal at a time — the orchestrator processes goals sequentially.
+        // Only 1 goal at a time â€” the orchestrator processes goals sequentially.
         if (activeGoals.length >= 1) {
           const current = activeGoals[0];
           return (
@@ -3257,7 +3508,7 @@ function createInstalledToolExecutor(tool: {
       // MCP tools would be executed via MCP protocol
       return `MCP tool ${tool.name} invoked with args: ${JSON.stringify(args)}`;
     }
-    // Generic installed tool — execute via sandbox shell if command is configured
+    // Generic installed tool â€” execute via sandbox shell if command is configured
     const command = tool.config?.command as string | undefined;
     if (command) {
       const result = await ctx.conway.exec(
@@ -3334,7 +3585,7 @@ export async function executeTool(
         arguments: args,
         result: "",
         durationMs: Date.now() - startTime,
-        error: `Policy denied: ${decision.reasonCode} — ${decision.humanMessage}`,
+        error: `Policy denied: ${decision.reasonCode} â€” ${decision.humanMessage}`,
       };
     }
   }
@@ -3414,3 +3665,11 @@ export async function executeTool(
 function escapeShellArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
+
+
+
+
+
+
+
+

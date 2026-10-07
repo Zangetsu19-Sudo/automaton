@@ -167,7 +167,9 @@ export function buildContextMessages(
     if (turn.thinking) {
       const msg: ChatMessage = {
         role: "assistant",
-        content: turn.thinking,
+        // Tool calls are already represented structurally below. Do not also
+        // replay local-model JSON tool syntax as assistant text.
+        content: turn.toolCalls.length > 0 ? "" : turn.thinking,
       };
 
       // If there were tool calls, include them

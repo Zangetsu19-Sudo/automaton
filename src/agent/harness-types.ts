@@ -56,6 +56,7 @@ export interface HarnessContext {
 
 export interface WorkerInferenceClient {
   chat(params: {
+    signal?: AbortSignal;
     tier?: string;
     messages: ChatMessage[];
     tools?: Array<{

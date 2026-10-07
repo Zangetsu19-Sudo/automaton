@@ -29,11 +29,26 @@ export class WorkingMemoryManager {
     sourceTurn?: string | null;
   }): string {
     const id = ulid();
+
+    if (typeof entry.content !== "string" || !entry.content.trim()) {
+      throw new Error("Working memory content must be a non-empty string.");
+    }
+
     const tokenCount = estimateTokens(entry.content);
+
     try {
       this.db.prepare(
-        `INSERT INTO working_memory (id, session_id, content, content_type, priority, token_count, expires_at, source_turn)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO working_memory (
+          id,
+          session_id,
+          content,
+          content_type,
+          priority,
+          token_count,
+          expires_at,
+          source_turn
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         entry.sessionId,
@@ -45,8 +60,14 @@ export class WorkingMemoryManager {
         entry.sourceTurn ?? null,
       );
     } catch (error) {
-      logger.error("Failed to add entry", error instanceof Error ? error : undefined);
+      // WORKING MEMORY INSERT FAILURE PROPAGATION
+      logger.error(
+        "Failed to add entry",
+        error instanceof Error ? error : undefined,
+      );
+      throw error;
     }
+
     return id;
   }
 

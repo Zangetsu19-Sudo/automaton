@@ -44,6 +44,22 @@ const GENERAL_WRAPPED_TOOL_ALLOWLIST = new Set([
   "forget",
   "x402_fetch",
 ]);
+// GENERAL PRODUCTIVE ACTION GUARD
+const PRODUCTIVE_GENERAL_TOOL_NAMES = new Set([
+  "exec",
+  "write_file",
+  "read_file",
+  "check_social_inbox",
+  "web_fetch",
+  "x402_fetch",
+  "search_domains",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_branch",
+  "git_clone",
+]);
+
 const GENERAL_SPEC_ALIAS_TARGETS = {
   web_fetch: "x402_fetch",
 } as const;
@@ -66,6 +82,7 @@ export class GeneralHarness extends BaseHarness {
   readonly id = "general";
   readonly description = "General-purpose agent for research, web interaction, and non-coding execution tasks.";
   private transferToolCallCount = 0;
+  private productiveActionCount = 0;
 
   buildSystemPrompt(): string {
     const role = this.task.agentRole ?? "generalist";
@@ -132,6 +149,13 @@ When calling task_done, provide:
             const result = await this.context.conway.exec(command, timeoutMs);
             return formatExecResult(result.stdout ?? "", result.stderr ?? "");
           } catch {
+            // VM EXEC HOST-FALLBACK GUARD
+            if (
+              this.context.config.runtimeMode === "local" &&
+              this.context.config.localIsolation === "vm"
+            ) {
+              return "exec error: VM execution failed; host fallback is disabled.";
+            }
             return localExec(command, timeoutMs);
           }
         },
@@ -160,7 +184,17 @@ When calling task_done, provide:
           try {
             await this.context.conway.writeFile(confined, content);
             return `Wrote ${content.length} bytes to ${confined}`;
-          } catch {
+          } catch (vmError) {
+            // GENERAL VM WRITE HOST-FALLBACK GUARD
+            if (
+              this.context.config.runtimeMode === "local" &&
+              this.context.config.localIsolation === "vm"
+            ) {
+              return `write error: VM write failed; host fallback disabled: ${
+                vmError instanceof Error ? vmError.message : String(vmError)
+              }`;
+            }
+
             try {
               await fs.mkdir(path.dirname(confined), { recursive: true });
               await fs.writeFile(confined, content, "utf8");
@@ -193,7 +227,17 @@ When calling task_done, provide:
           try {
             const content = await this.context.conway.readFile(confined);
             return content.slice(0, MAX_READ_SIZE) || "(empty file)";
-          } catch {
+          } catch (vmError) {
+            // GENERAL VM READ HOST-FALLBACK GUARD
+            if (
+              this.context.config.runtimeMode === "local" &&
+              this.context.config.localIsolation === "vm"
+            ) {
+              return `read error: VM read failed; host fallback disabled: ${
+                vmError instanceof Error ? vmError.message : String(vmError)
+              }`;
+            }
+
             try {
               const content = await fs.readFile(confined, "utf8");
               return content.slice(0, MAX_READ_SIZE) || "(empty file)";
@@ -288,7 +332,58 @@ When calling task_done, provide:
       .filter((tool) => !reservedToolNames.has(tool.name))
       .map((tool) => this.createWrappedTool(tool, toolCatalog));
 
-    return [...customTools, ...aliasTools, ...wrappedTools];
+    const allTools = [
+      ...customTools,
+      ...aliasTools,
+      ...wrappedTools,
+    ];
+
+    return allTools.map((tool) => {
+      const originalExecute = tool.execute;
+
+      if (tool.name === "task_done") {
+        return {
+          ...tool,
+          execute: async (args) => {
+            const wantsSuccess = args.success !== false;
+
+            if (wantsSuccess && this.productiveActionCount < 1) {
+              throw new Error(
+                "Cannot report successful completion yet: no concrete productive " +
+                "action has been completed. Memory/status/procedure lookups do not " +
+                "count as task completion. Use the available execution, file, research, " +
+                "or other task-relevant tools to perform real work first. If the task " +
+                "truly cannot be completed, call task_done with success=false.",
+              );
+            }
+
+            return originalExecute(args);
+          },
+        };
+      }
+
+      if (!PRODUCTIVE_GENERAL_TOOL_NAMES.has(tool.name)) {
+        return tool;
+      }
+
+      return {
+        ...tool,
+        execute: async (args) => {
+          const result = await originalExecute(args);
+          const normalized = result.trim();
+
+          const failed =
+            /^(?:Error:|Blocked:|Failed\b)/i.test(normalized) ||
+            /^(?:read|write|exec) error:/i.test(normalized);
+
+          if (!failed) {
+            this.productiveActionCount += 1;
+          }
+
+          return result;
+        },
+      };
+    });
   }
 
   private createWrappedTool(tool: AutomatonTool, toolCatalog: AutomatonTool[]): HarnessTool {
@@ -377,13 +472,28 @@ function confineToWorkspace(
   filePath: string,
   allowedRoot: string,
 ): string | { error: string } {
-  const expanded = filePath.startsWith("~")
-    ? path.join(allowedRoot, filePath.slice(1))
-    : filePath;
-  const resolved = path.resolve(allowedRoot, expanded);
-  if (resolved !== allowedRoot && !resolved.startsWith(allowedRoot + path.sep)) {
-    return { error: `Blocked: path "${filePath}" resolves outside workspace (${allowedRoot})` };
+  // VM-AWARE WORKSPACE CONFINEMENT
+  const usePosix = allowedRoot.startsWith("/");
+  const pathApi = usePosix ? path.posix : path;
+
+  if (usePosix && /^[a-zA-Z]:[\\/]/.test(filePath)) {
+    return {
+      error: "Blocked: Windows host path supplied to VM worker: " + filePath,
+    };
   }
+
+  const root = pathApi.resolve(allowedRoot);
+  const expanded = filePath.startsWith("~")
+    ? pathApi.join(root, filePath.slice(1))
+    : filePath;
+  const resolved = pathApi.resolve(root, expanded);
+
+  if (resolved !== root && !resolved.startsWith(root + pathApi.sep)) {
+    return {
+      error: "Blocked: path \"" + filePath + "\" resolves outside workspace (" + root + ")",
+    };
+  }
+
   return resolved;
 }
 

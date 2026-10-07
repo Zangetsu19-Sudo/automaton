@@ -6,6 +6,7 @@
  */
 
 import path from "node:path";
+import os from "node:os";
 import type {
   AutomatonIdentity,
   AutomatonConfig,
@@ -48,7 +49,7 @@ import type { InboxMessageRow } from "../state/database.js";
 import { ulid } from "ulid";
 import { ModelRegistry } from "../inference/registry.js";
 import { InferenceBudgetTracker } from "../inference/budget.js";
-import { InferenceRouter } from "../inference/router.js";
+import { InferenceRouter, parseContentToolCall } from "../inference/router.js";
 import { MemoryRetriever } from "../memory/retrieval.js";
 import { MemoryIngestionPipeline } from "../memory/ingestion.js";
 import { DEFAULT_MEMORY_BUDGET } from "../types.js";
@@ -62,6 +63,7 @@ import { LocalWorkerPool } from "../orchestration/local-worker.js";
 import { SimpleAgentTracker, SimpleFundingProtocol } from "../orchestration/simple-tracker.js";
 import { HarnessRegistry } from "./harness-registry.js";
 import { createWorkerInferenceBridge } from "./worker-inference-bridge.js";
+import type { WorkerInferenceClient } from "./harness-types.js";
 import { ProviderRegistry } from "../inference/provider-registry.js";
 import { UnifiedInferenceClient } from "../inference/inference-client.js";
 import { isIdleOnlyTool } from "./idle-only-tools.js";
@@ -96,9 +98,39 @@ export async function runAgentLoop(
   const { identity, config, db, conway, inference, social, skills, policyEngine, spendTracker, onStateChange, onTurnComplete, ollamaBaseUrl } =
     options;
 
-  const builtinTools = createBuiltinTools(identity.sandboxId);
+  const builtinTools = createBuiltinTools(identity.sandboxId).filter((tool) => {
+    if (config.runtimeMode !== "local") return true;
+
+    // Do not advertise Conway-only operations when the control plane is disabled.
+    // Local VM/file tools remain available because createConwayClient already
+    // implements those against the local machine when sandboxId is empty.
+    if (tool.category === "conway") return false;
+    if (tool.category === "replication") return false;
+    // LOCAL REGISTRY TOOL GUARD
+    // Local mode currently has no configured public registry/on-chain identity path.
+    if (tool.category === "registry") return false;
+    if (tool.name === "topup_credits" || tool.name === "transfer_credits") {
+      return false;
+    }
+    return true;
+  });
   const installedTools = loadInstalledTools(db);
-  const tools = [...builtinTools, ...installedTools];
+  // LOCAL AUTONOMOUS IDENTITY GUARD
+  // Small local parent models must not opportunistically rewrite identity
+  // or the immutable operating mission during ordinary planning turns.
+  const tools = [...builtinTools, ...installedTools].filter((tool) => {
+    if (config.runtimeMode !== "local") return true;
+
+    return ![
+      "update_soul",
+      "update_genesis_prompt",
+          // LOCAL WORKING-MEMORY GOAL GUARD
+      // create_goal is the authoritative orchestrator goal API.
+      // Hide the legacy working-memory goal API from the local parent.
+      "set_goal",
+      "complete_goal",
+].includes(tool.name);
+  });
   const toolContext: ToolContext = {
     identity,
     config,
@@ -115,6 +147,26 @@ export async function runAgentLoop(
   };
   const modelRegistry = new ModelRegistry(db.raw);
   modelRegistry.initialize();
+
+  // In local mode, catalog presence is not the same as provider availability.
+  // Disable paid remote-provider entries when their credentials are absent so
+  // routing can fall through to configured/free local models instead of
+  // accidentally attempting Conway as a legacy fallback.
+  if (config.runtimeMode === "local") {
+    const hasOpenAI = Boolean(config.openaiApiKey || process.env.OPENAI_API_KEY);
+    const hasAnthropic = Boolean(config.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+    for (const entry of modelRegistry.getAll()) {
+      if (entry.provider === "openai" && !hasOpenAI) {
+        modelRegistry.setEnabled(entry.modelId, false);
+      }
+      if (entry.provider === "anthropic" && !hasAnthropic) {
+        modelRegistry.setEnabled(entry.modelId, false);
+      }
+      if (entry.provider === "conway") {
+        modelRegistry.setEnabled(entry.modelId, false);
+      }
+    }
+  }
 
   // Discover Ollama models if configured
   if (ollamaBaseUrl) {
@@ -157,7 +209,7 @@ export async function runAgentLoop(
       }
 
       const providersPath = path.join(
-        process.env.HOME || process.cwd(),
+        os.homedir(),
         ".automaton",
         "inference-providers.json",
       );
@@ -181,7 +233,56 @@ export async function runAgentLoop(
 
       // Adapter: local workers use the unified inference path so planner-backed
       // harnesses can preserve tier + responseFormat contracts.
-      const workerInference = createWorkerInferenceBridge(unifiedInference);
+      // Honor the selected model instead of silently loading a larger installed
+      // coder model, which can exceed the entire worker budget on CPU machines.
+      const preferredLocalWorkerModel = config.localWorkerModel || config.inferenceModel;
+
+      const workerInference: WorkerInferenceClient =
+        config.runtimeMode === "local"
+          ? {
+              chat: async (params) => {
+                const model =
+                  params.tier === "cheap"
+                    ? config.inferenceModel
+                    : preferredLocalWorkerModel;
+
+                const response = await inference.chat(params.messages, {
+                  signal: params.signal,
+                  model,
+                  tools: params.tools,
+                  maxTokens: params.maxTokens,
+                  temperature: params.temperature,
+                });
+
+                // LOCAL WORKER CONTENT TOOL PROMOTION
+                // Ollama models sometimes serialize a valid tool call as
+                // strict JSON content instead of native tool_calls.
+                const nativeToolCalls =
+                  Array.isArray(response.toolCalls) &&
+                  response.toolCalls.length > 0
+                    ? response.toolCalls
+                    : undefined;
+
+                const promotedToolCalls = nativeToolCalls
+                  ? undefined
+                  : parseContentToolCall(
+                      response.message.content || "",
+                      params.tools,
+                    );
+
+                return {
+                  content: response.message.content,
+                  toolCalls: nativeToolCalls ?? promotedToolCalls,
+                };
+              },
+            }
+          : createWorkerInferenceBridge(unifiedInference);
+
+      if (config.runtimeMode === "local") {
+        logger.info(
+          `Local worker inference: cheap=${config.inferenceModel}, fast/reasoning=${preferredLocalWorkerModel}`,
+        );
+      }
 
       // Local worker pool: runs inference-driven agents in-process
       // as async tasks. Falls back from Conway sandbox spawning.
@@ -220,6 +321,7 @@ export async function runAgentLoop(
         },
         config: {
           ...config,
+          getLocalWorkerCount: () => initializedWorkerPool.getActiveCount(),
           spawnAgent: async (task: any) => {
             // Try Conway sandbox spawn first (production)
             try {
@@ -342,6 +444,8 @@ export async function runAgentLoop(
   let lastToolPatterns: string[] = [];
   let loopWarningPattern: string | null = null;
   let idleToolTurns = 0;
+  let activeGoalNoActionRetries = 0;
+  let noGoalNoActionRetries = 0;
   // blockedGoalTurns removed — replaced by immediate sleep + exponential backoff
 
   // Drain any stale wake events from before this loop started,
@@ -358,7 +462,7 @@ export async function runAgentLoop(
   onStateChange?.("waking");
 
   // Get financial state
-  let financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+  let financial = await getFinancialState(conway, identity.address, db, config);
 
   // Check if this is the first run
   const isFirstRun = db.getTurnCount() === 0;
@@ -426,7 +530,7 @@ export async function runAgentLoop(
       }
 
       // Refresh financial state periodically
-      financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+      financial = await getFinancialState(conway, identity.address, db, config);
 
       // Check survival tier
       // api_unreachable: creditsCents === -1 means API failed with no cache.
@@ -441,7 +545,11 @@ export async function runAgentLoop(
         // available, buy credits NOW — before attempting inference.
         // This prevents the agent from dying mid-loop while waiting for
         // the heartbeat to fire. Uses a 60s cooldown to avoid hammering.
-        if ((tier === "critical" || tier === "low_compute") && financial.usdcBalance >= 5) {
+        if (
+          config.runtimeMode !== "local" &&
+          (tier === "critical" || tier === "low_compute") &&
+          financial.usdcBalance >= 5
+        ) {
           const INLINE_TOPUP_COOLDOWN_MS = 60_000;
           const lastInlineTopup = db.getKV("last_inline_topup_attempt");
           const cooldownExpired = !lastInlineTopup ||
@@ -461,7 +569,7 @@ export async function runAgentLoop(
                 log(config, `[AUTO-TOPUP] Bought $${topupResult.amountUsd} credits from USDC mid-loop`);
                 // Re-fetch financial state after topup so the rest of
                 // the turn sees the updated balance.
-                financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+                financial = await getFinancialState(conway, identity.address, db, config);
               }
             } catch (err: any) {
               logger.warn(`Inline auto-topup failed: ${err.message}`);
@@ -546,12 +654,30 @@ export async function runAgentLoop(
         ).get(identity.address);
 
         if (
+          config.runtimeMode === "local" &&
+          orchestratorTick.phase === "executing" &&
+          !hasSelfAssignedParentTask &&
+          localWorkersActive > 0
+        ) {
+          log(
+            config,
+            "[ORCHESTRATOR] Local delegated work active. Yielding parent inference while worker runs.",
+          );
+
+          // Keep this runAgentLoop alive so the LocalWorkerPool remains authoritative.
+          // Do not run parent inference concurrently against the same Ollama backend.
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+          continue;
+        }
+
+        if (
+          config.runtimeMode !== "local" &&
           orchestratorTick.phase === "executing" &&
           orchestratorTick.tasksAssigned === 0 &&
           orchestratorTick.tasksCompleted === 0 &&
           orchestratorTick.tasksFailed === 0 &&
           !hasSelfAssignedParentTask &&
-          (orchestratorTick.agentsActive > 0 || localWorkersActive > 0)
+          orchestratorTick.agentsActive > 0
         ) {
           log(
             config,
@@ -611,6 +737,34 @@ export async function runAgentLoop(
         },
         (msgs, opts) => inference.chat(msgs, { ...opts, tools: inferenceTools }),
       );
+
+      // In local runtime mode, the survival ledger pays the measured model cost.
+      // Free/local models naturally debit $0; paid direct providers consume treasury.
+      if (config.runtimeMode === "local" && routerResult.costCents > 0) {
+        const currentTreasury = Number(
+          db.getKV("local_treasury_cents") ?? config.localTreasuryCents ?? 500,
+        );
+        const safeCurrent = Number.isFinite(currentTreasury) ? currentTreasury : 0;
+        const nextTreasury = safeCurrent - routerResult.costCents;
+        db.setKV("local_treasury_cents", String(nextTreasury));
+        db.insertTransaction({
+          id: ulid(),
+          type: "inference",
+          amountCents: routerResult.costCents,
+          balanceAfterCents: nextTreasury,
+          description: `Local treasury inference debit: ${routerResult.model} via ${routerResult.provider}`,
+          timestamp: new Date().toISOString(),
+        });
+        financial = {
+          ...financial,
+          creditsCents: nextTreasury,
+          lastChecked: new Date().toISOString(),
+        };
+        log(
+          config,
+          `[TREASURY] -${(routerResult.costCents / 100).toFixed(2)} inference; balance ${(nextTreasury / 100).toFixed(2)}`,
+        );
+      }
 
       // Build a compatible response for the rest of the loop
       const response = {
@@ -844,7 +998,7 @@ export async function runAgentLoop(
         "update_genesis_prompt", "update_agent_card", "modify_heartbeat",
         "expose_port", "remove_port", "x402_fetch", "manage_dns",
         "distress_signal", "prune_dead_children", "sleep",
-        "update_soul", "remember_fact", "set_goal", "complete_goal",
+        "update_soul", "create_goal", "remember_fact", "set_goal", "complete_goal",
         "save_procedure", "note_about_agent", "forget",
         "enter_low_compute", "switch_model", "review_upstream_changes",
       ]);
@@ -877,22 +1031,86 @@ export async function runAgentLoop(
         break;
       }
 
-      // ── If no tool calls and just text, the agent might be done thinking ──
+      // ── Text-only response recovery ──
       if (
         running &&
         (!response.toolCalls || response.toolCalls.length === 0) &&
         response.finishReason === "stop"
       ) {
-        // Agent produced text without tool calls.
-        // This is a natural pause point -- no work queued, sleep briefly.
-        log(config, "[IDLE] No pending inputs. Entering brief sleep.");
-        db.setKV(
-          "sleep_until",
-          new Date(Date.now() + 60_000).toISOString(),
-        );
-        db.setAgentState("sleeping");
-        onStateChange?.("sleeping");
-        running = false;
+        const hasActiveGoal =
+          hasTable(db.raw, "goals") &&
+          Boolean(
+            db.raw
+              .prepare(
+                "SELECT 1 FROM goals WHERE status = 'active' LIMIT 1",
+              )
+              .get(),
+          );
+
+        if (
+          !hasActiveGoal &&
+          config.runtimeMode === "local" &&
+          noGoalNoActionRetries < 2
+        ) {
+          noGoalNoActionRetries++;
+          activeGoalNoActionRetries = 0;
+
+          log(
+            config,
+            `[RECOVER] No active goal. Requesting autonomous goal creation ${noGoalNoActionRetries}/2.`,
+          );
+
+          pendingInput = {
+            content:
+              "AUTONOMOUS GOAL RECOVERY: You have no active goals, but your mission is ongoing.\n\n" +
+              "Your genesis mission is: " + config.genesisPrompt + "\n\n" +
+              "You MUST call create_goal now. Create exactly one concrete goal.\n\n" +
+              "GOAL QUALITY RULES:\n" +
+              "- The goal must be executable with capabilities that are actually available right now.\n" +
+              "- Prefer direct value-for-payment work: a useful service, software utility, research deliverable, or original digital product.\n" +
+              "- Preserve the $5 treasury. Prefer zero-cost execution and do not spend money merely to test an idea.\n" +
+              "- Do not assume an account, marketplace, payment rail, login, social account, email account, or outbound messaging channel exists unless a current tool provides it.\n" +
+              "- If no authorized sales/payment channel exists yet, build and validate a genuinely sellable offer or asset and clearly identify the missing channel instead of pretending revenue was earned.\n" +
+              "- Avoid speculative asset schemes, NFT/token issuance, gambling, trading, get-rich-quick strategies, fake scarcity, or hype-driven monetization.\n" +
+              "- Use only original, licensed, public-domain, or otherwise authorized content. Do not monetize third-party or user-generated content without permission.\n" +
+              "- No spam, deceptive marketing, fake reviews, unsolicited mass outreach, unauthorized access, or manipulation.\n" +
+              "- The goal must have a measurable deliverable and a plausible path toward a first voluntary paying customer.\n\n" +
+              "Do NOT call list_goals again. Do NOT merely describe a goal in text. Your next response must use create_goal.",
+            source: "system",
+          };
+        } else if (hasActiveGoal && activeGoalNoActionRetries < 2) {
+          activeGoalNoActionRetries++;
+
+          log(
+            config,
+            `[RECOVER] Active goal exists but model produced no tool action. Retry ${activeGoalNoActionRetries}/2.`,
+          );
+
+          pendingInput = {
+            content:
+              "ACTIVE GOAL RECOVERY: You already have an active goal. " +
+              "Do not ask the creator to provide a function call. " +
+              "YOU are the tool caller. Choose and invoke one advertised tool " +
+              "that advances the active goal now. Use the goal/task state already " +
+              "provided by the orchestrator.",
+            source: "system",
+          };
+        } else {
+          activeGoalNoActionRetries = 0;
+
+          log(config, "[IDLE] No pending actionable work. Entering brief sleep.");
+
+          db.setKV(
+            "sleep_until",
+            new Date(Date.now() + 60_000).toISOString(),
+          );
+          db.setAgentState("sleeping");
+          onStateChange?.("sleeping");
+          running = false;
+        }
+      } else if (response.toolCalls && response.toolCalls.length > 0) {
+        activeGoalNoActionRetries = 0;
+        noGoalNoActionRetries = 0;
       }
 
       consecutiveErrors = 0;
@@ -946,9 +1164,29 @@ let _lastKnownUsdc = 0;
 async function getFinancialState(
   conway: ConwayClient,
   address: string,
-  db?: AutomatonDatabase,
-  chainType?: string,
+  db: AutomatonDatabase | undefined,
+  config: AutomatonConfig,
 ): Promise<FinancialState> {
+  if (config.runtimeMode === "local") {
+    const initialTreasury = Number.isFinite(config.localTreasuryCents)
+      ? Math.max(0, Math.floor(config.localTreasuryCents ?? 500))
+      : 500;
+    const stored = db?.getKV("local_treasury_cents");
+    let creditsCents = stored !== undefined ? Number(stored) : initialTreasury;
+    if (!Number.isFinite(creditsCents)) {
+      creditsCents = initialTreasury;
+    }
+    if (stored === undefined && db) {
+      db.setKV("local_treasury_cents", String(creditsCents));
+    }
+    return {
+      creditsCents,
+      usdcBalance: 0,
+      lastChecked: new Date().toISOString(),
+    };
+  }
+
+  const chainType = config.chainType || "evm";
   let creditsCents = _lastKnownCredits;
   let usdcBalance = _lastKnownUsdc;
 

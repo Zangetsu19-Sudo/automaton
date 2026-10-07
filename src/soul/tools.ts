@@ -1,5 +1,5 @@
-/**
- * Soul Tools — Tool implementations for soul management.
+﻿/**
+ * Soul Tools â€” Tool implementations for soul management.
  *
  * Provides updateSoul, reflectOnSoul (trigger), viewSoul, and viewSoulHistory.
  * All operations validate before saving and log to soul_history.
@@ -9,6 +9,7 @@
 
 import fs from "fs";
 import path from "path";
+import os from "node:os";
 import type BetterSqlite3 from "better-sqlite3";
 import type { SoulModel, SoulHistoryRow } from "../types.js";
 import { loadCurrentSoul, writeSoulMd, createHash, createDefaultSoul } from "./model.js";
@@ -18,7 +19,7 @@ import { ulid } from "ulid";
 import { createLogger } from "../observability/logger.js";
 const logger = createLogger("soul");
 
-// ─── Update Soul ────────────────────────────────────────────────
+// â”€â”€â”€ Update Soul â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export interface UpdateSoulResult {
   success: boolean;
@@ -37,7 +38,7 @@ export async function updateSoul(
   soulPath?: string,
 ): Promise<UpdateSoulResult> {
   try {
-    const home = process.env.HOME || "/root";
+    const home = os.homedir();
     const resolvedPath = soulPath || path.join(home, ".automaton", "SOUL.md");
 
     // Load current soul or create default
@@ -114,7 +115,7 @@ export async function updateSoul(
   }
 }
 
-// ─── View Soul ──────────────────────────────────────────────────
+// â”€â”€â”€ View Soul â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * View the current soul model.
@@ -126,7 +127,7 @@ export function viewSoul(
   return loadCurrentSoul(db, soulPath);
 }
 
-// ─── View Soul History ──────────────────────────────────────────
+// â”€â”€â”€ View Soul History â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * View soul change history.
@@ -137,3 +138,4 @@ export function viewSoulHistory(
 ): SoulHistoryRow[] {
   return getSoulHistory(db, limit);
 }
+

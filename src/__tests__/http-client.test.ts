@@ -42,6 +42,19 @@ afterEach(() => {
 // ─── Tests ─────────────────────────────────────────────────────
 
 describe("ResilientHttpClient", () => {
+  it("propagates caller cancellation without retrying or tripping the circuit", async () => {
+    const client = new ResilientHttpClient({ maxRetries: 3 });
+    const controller = new AbortController();
+    globalThis.fetch = vi.fn((_url, opts) => new Promise((_resolve, reject) => {
+      opts?.signal?.addEventListener("abort", () => reject(opts.signal?.reason), { once: true });
+    })) as any;
+    const pending = client.request("https://example.com", { signal: controller.signal });
+    const assertion = expect(pending).rejects.toThrow("cancelled by worker");
+    controller.abort(new Error("cancelled by worker"));
+    await assertion;
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(client.getConsecutiveFailures()).toBe(0);
+  });
   describe("HTTPS enforcement", () => {
     it("rejects remote HTTP URLs", async () => {
       const client = new ResilientHttpClient({ maxRetries: 0 });

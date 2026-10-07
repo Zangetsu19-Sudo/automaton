@@ -34,6 +34,31 @@ or review code to complete this task.
 6. When done, call task_done with a summary of changes made and test results.
 7. If you cannot complete the task, call task_done explaining what you tried and why it failed.
 
+## Mandatory Action Protocol
+
+<!-- LOCAL CODING TOOL FORMAT -->
+- Tool results from the CURRENT task are authoritative. Never invent a file or path that was not shown by a current tool result.
+- Ignore stale file paths from previous attempts, memories, learnings, or failed workers.
+- In local VM mode, Windows paths such as C:\\Users\\... are invalid. Use POSIX paths exposed by the VM tools.
+- When you need a tool, ACTUALLY invoke the tool. Do not say that you will invoke it.
+- Do not print a tool call as explanatory prose.
+- If your backend serializes a tool call into assistant content instead of native tool_calls, your ENTIRE response must be exactly one JSON object and nothing else.
+- Example valid serialized tool call: {"name":"list_dir","arguments":{}}
+- Invalid: "I will inspect the directory. {"name":"list_dir","arguments":{}}"
+- Never claim tests ran unless an exec tool result in this task proves they ran.
+- Never claim task_done was called. Actually call task_done.
+
+
+- DO NOT ask the user what files, language, or project structure to use.
+- Inspect the workspace yourself using list_dir, read_file, or exec.
+- If the workspace is empty, create the smallest viable implementation yourself.
+- While working, every response MUST invoke at least one available tool.
+- Do not narrate what you intend to do instead of doing it.
+- NEVER claim that a file was created, modified, tested, or executed unless a tool result in this conversation proves it.
+- NEVER say that task_done was called. Actually invoke the task_done tool.
+- For a new coding project, your first action should normally be list_dir or an equivalent exec inspection.
+- After implementation, run a real verification command with exec before reporting success.
+
 ## Anti-Loop Rules
 
 - NEVER check balances, credits, or system status. You do not have those tools.
@@ -82,9 +107,16 @@ When calling task_done, provide:
           }
           try {
             const result = await this.context.conway.exec(command, timeoutMs);
-            return formatExecResult(result.stdout ?? "", result.stderr ?? "");
+            return formatExecResult(result.stdout ?? "", result.stderr ?? "", result.exitCode);
           } catch {
-            return localExec(command, timeoutMs);
+            // VM EXEC HOST-FALLBACK GUARD
+            if (
+              this.context.config.runtimeMode === "local" &&
+              this.context.config.localIsolation === "vm"
+            ) {
+              return "exec error: VM execution failed; host fallback is disabled.";
+            }
+            return localExec(command, timeoutMs, this.context.allowedEditRoot);
           }
         },
       },
@@ -112,7 +144,17 @@ When calling task_done, provide:
           try {
             await this.context.conway.writeFile(confined, content);
             return `Wrote ${content.length} bytes to ${confined}`;
-          } catch {
+          } catch (vmError) {
+            // VM WRITE HOST-FALLBACK GUARD
+            if (
+              this.context.config.runtimeMode === "local" &&
+              this.context.config.localIsolation === "vm"
+            ) {
+              return `write error: VM write failed; host fallback disabled: ${
+                vmError instanceof Error ? vmError.message : String(vmError)
+              }`;
+            }
+
             try {
               await fs.mkdir(path.dirname(confined), { recursive: true });
               await fs.writeFile(confined, content, "utf8");
@@ -150,7 +192,15 @@ When calling task_done, provide:
             let content: string;
             try {
               content = await this.context.conway.readFile(confined);
-            } catch {
+            } catch (vmError) {
+              // VM READ HOST-FALLBACK GUARD
+              if (
+                this.context.config.runtimeMode === "local" &&
+                this.context.config.localIsolation === "vm"
+              ) {
+                throw vmError;
+              }
+
               content = await fs.readFile(confined, "utf8");
             }
             const slice = content.slice(offset, offset + limit);
@@ -190,7 +240,15 @@ When calling task_done, provide:
             let content: string;
             try {
               content = await this.context.conway.readFile(confined);
-            } catch {
+            } catch (vmError) {
+              // VM READ HOST-FALLBACK GUARD
+              if (
+                this.context.config.runtimeMode === "local" &&
+                this.context.config.localIsolation === "vm"
+              ) {
+                throw vmError;
+              }
+
               content = await fs.readFile(confined, "utf8");
             }
             if (!content.includes(search)) {
@@ -199,7 +257,15 @@ When calling task_done, provide:
             const patched = content.replace(search, replace);
             try {
               await this.context.conway.writeFile(confined, patched);
-            } catch {
+            } catch (vmError) {
+              // VM PATCH HOST-FALLBACK GUARD
+              if (
+                this.context.config.runtimeMode === "local" &&
+                this.context.config.localIsolation === "vm"
+              ) {
+                throw vmError;
+              }
+
               await fs.writeFile(confined, patched, "utf8");
             }
             return `Patched ${filePath}: replaced ${search.length} chars with ${replace.length} chars`;
@@ -224,6 +290,35 @@ When calling task_done, provide:
           if (typeof confined !== "string") {
             return confined.error;
           }
+          // VM LIST DIRECTORY
+          if (
+            this.context.config.runtimeMode === "local" &&
+            this.context.config.localIsolation === "vm"
+          ) {
+            const relative =
+              path.posix.relative(this.context.allowedEditRoot, confined) || ".";
+
+            const quoted =
+              "'" + relative.replace(/'/g, "'\"'\"'") + "'";
+
+            try {
+              const result = await this.context.conway.exec(
+                `ls -la -- ${quoted}`,
+                30_000,
+              );
+
+              if (result.exitCode !== 0) {
+                return `list error: ${result.stderr || "VM ls failed"}`;
+              }
+
+              return result.stdout || "(empty directory)";
+            } catch (error) {
+              return `list error: ${
+                error instanceof Error ? error.message : String(error)
+              }`;
+            }
+          }
+
           try {
             const entries = await fs.readdir(confined, { withFileTypes: true });
             return entries.map((entry) => `${entry.isDirectory() ? "dir" : entry.isFile() ? "file" : "other"}\t${entry.name}`).join("\n") || "(empty directory)";
@@ -246,6 +341,19 @@ When calling task_done, provide:
         execute: async (args) => {
           const summary = args.summary as string;
           const success = args.success !== false;
+
+          // CODING COMPLETION EVIDENCE GUARD
+          if (success && this.artifacts.length === 0) {
+            throw new Error(
+              "Cannot report successful coding completion: no file was created or modified. " +
+              "Use write_file or patch_file to perform actual implementation first. " +
+              "Then verify the work before calling task_done. " +
+              "If implementation is impossible, call task_done with success=false."
+            );
+          }
+          if (success && !this.lastExecutionSucceeded) {
+            throw new Error("Cannot report successful coding completion: run a verification command with exec after the last edit and resolve any nonzero exit code first.");
+          }
           return `TASK_COMPLETE:${success ? "SUCCESS" : "FAILURE"}:${summary}`;
         },
       },
@@ -284,34 +392,49 @@ function confineToWorkspace(
   filePath: string,
   allowedRoot: string,
 ): string | { error: string } {
-  const expanded = filePath.startsWith("~")
-    ? path.join(allowedRoot, filePath.slice(1))
-    : filePath;
-  const resolved = path.resolve(allowedRoot, expanded);
-  if (resolved !== allowedRoot && !resolved.startsWith(allowedRoot + path.sep)) {
-    return { error: `Blocked: path "${filePath}" resolves outside workspace (${allowedRoot})` };
+  // VM-AWARE WORKSPACE CONFINEMENT
+  const usePosix = allowedRoot.startsWith("/");
+  const pathApi = usePosix ? path.posix : path;
+
+  if (usePosix && /^[a-zA-Z]:[\\/]/.test(filePath)) {
+    return {
+      error: "Blocked: Windows host path supplied to VM worker: " + filePath,
+    };
   }
+
+  const root = pathApi.resolve(allowedRoot);
+  const expanded = filePath.startsWith("~")
+    ? pathApi.join(root, filePath.slice(1))
+    : filePath;
+  const resolved = pathApi.resolve(root, expanded);
+
+  if (resolved !== root && !resolved.startsWith(root + pathApi.sep)) {
+    return {
+      error: "Blocked: path \"" + filePath + "\" resolves outside workspace (" + root + ")",
+    };
+  }
+
   return resolved;
 }
 
-function formatExecResult(stdout: string, stderr: string): string {
+function formatExecResult(stdout: string, stderr: string, exitCode: number): string {
   const out = stdout.length > MAX_EXEC_OUTPUT
     ? stdout.slice(0, MAX_EXEC_OUTPUT) + `\n[TRUNCATED: ${stdout.length - MAX_EXEC_OUTPUT} chars]`
     : stdout;
   const err = stderr.length > 4000
     ? stderr.slice(0, 4000) + "\n[TRUNCATED]"
     : stderr;
-  return err ? `stdout:\n${out}\nstderr:\n${err}` : out || "(no output)";
+  return `Exit code: ${exitCode}\n` + (err ? `stdout:\n${out}\nstderr:\n${err}` : out || "(no output)");
 }
 
-function localExec(command: string, timeoutMs: number): Promise<string> {
+function localExec(command: string, timeoutMs: number, cwd: string): Promise<string> {
   return new Promise((resolve) => {
-    execCb(command, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    execCb(command, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
       if (error && !stdout && !stderr) {
         resolve(`exec error: ${error.message}`);
         return;
       }
-      resolve(formatExecResult(stdout ?? "", stderr ?? ""));
+      resolve(formatExecResult(stdout ?? "", stderr ?? "", error ? (typeof error.code === "number" ? error.code : 1) : 0));
     });
   });
 }

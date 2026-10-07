@@ -46,6 +46,23 @@ export interface AutomatonConfig {
   creatorMessage?: string;
   creatorAddress: string;
   registeredWithConway: boolean;
+  /** Runtime infrastructure mode. "local" disables Conway control-plane dependencies. */
+  runtimeMode?: "conway" | "hybrid" | "local";
+  /** Starting balance for the local survival ledger, in cents. Defaults to $5.00. */
+  localTreasuryCents?: number;
+  /** Root directory used for workspace-confined local execution. */
+  localSandboxRoot?: string;
+  /** Isolation backend for local runtime. */
+  localIsolation?: "workspace" | "vm";
+  /** SSH configuration for a dedicated guest VM when localIsolation="vm". */
+  localVm?: {
+    host: string;
+    port?: number;
+    user: string;
+    workspaceRoot?: string;
+    identityFile?: string;
+    knownHostsFile?: string;
+  };
   sandboxId: string;
   conwayApiUrl: string;
   conwayApiKey: string;
@@ -53,6 +70,7 @@ export interface AutomatonConfig {
   anthropicApiKey?: string;
   ollamaBaseUrl?: string;
   inferenceModel: string;
+  localWorkerModel?: string;
   maxTokensPerTurn: number;
   heartbeatConfigPath: string;
   dbPath: string;
@@ -79,6 +97,10 @@ export interface AutomatonConfig {
 
 export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
   conwayApiUrl: "https://api.conway.tech",
+  runtimeMode: "conway",
+  localTreasuryCents: 500,
+  localSandboxRoot: "~/.automaton/workspace",
+  localIsolation: "workspace",
   inferenceModel: "gpt-5.2",
   maxTokensPerTurn: 4096,
   heartbeatConfigPath: "~/.automaton/heartbeat.yml",
@@ -161,7 +183,8 @@ export type ToolCategory =
   | "git"
   | "registry"
   | "replication"
-  | "memory";
+  | "memory"
+  | "browser";
 
 export interface ToolContext {
   identity: AutomatonIdentity;
@@ -336,6 +359,7 @@ export interface InferenceResponse {
 }
 
 export interface InferenceOptions {
+  signal?: AbortSignal;
   model?: string;
   maxTokens?: number;
   temperature?: number;

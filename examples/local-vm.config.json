@@ -1,0 +1,13 @@
+{
+  "runtimeMode": "local",
+  "localIsolation": "vm",
+  "localTreasuryCents": 500,
+  "localVm": {
+    "host": "192.0.2.10",
+    "port": 22,
+    "user": "automaton",
+    "workspaceRoot": "/home/automaton/workspace",
+    "identityFile": "C:/Users/YOU/.ssh/automaton_vm",
+    "knownHostsFile": "C:/Users/YOU/.ssh/known_hosts"
+  }
+}

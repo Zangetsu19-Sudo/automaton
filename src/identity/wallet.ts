@@ -12,6 +12,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import nacl from "tweetnacl";
 import bs58 from "bs58";
 import fs from "fs";
+import os from "node:os";
 import path from "path";
 import type { WalletData } from "../types.js";
 import type { ChainType } from "./chain.js";
@@ -41,10 +42,7 @@ function createSolanaStubAccount(solanaAddress: string): PrivateKeyAccount {
   } as unknown as PrivateKeyAccount;
 }
 
-const AUTOMATON_DIR = path.join(
-  process.env.HOME || "/root",
-  ".automaton",
-);
+const AUTOMATON_DIR = path.join(os.homedir(), ".automaton");
 const WALLET_FILE = path.join(AUTOMATON_DIR, "wallet.json");
 
 export function getAutomatonDir(): string {

@@ -24,6 +24,61 @@ import { DEFAULT_ROUTING_MATRIX, TASK_TIMEOUTS } from "./types.js";
 
 type Database = BetterSqlite3.Database;
 
+/**
+ * Some local/OpenAI-compatible models occasionally serialize a tool request as
+ * assistant content instead of returning a native tool_calls array. Promote
+ * only a strict, whole-message JSON object whose tool name is present in the
+ * advertised tool list. This keeps native function calling authoritative and
+ * avoids treating ordinary prose or arbitrary JSON as an action request.
+ */
+export function parseContentToolCall(
+  content: string,
+  tools: any[] | undefined,
+): any[] | undefined {
+  if (!content || !tools || tools.length === 0) return undefined;
+
+  let candidate = content.trim();
+  const fenced = candidate.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) candidate = fenced[1].trim();
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(candidate);
+  } catch {
+    return undefined;
+  }
+
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+    return undefined;
+  }
+  if (typeof parsed.name !== "string") return undefined;
+  if (
+    parsed.arguments === null ||
+    Array.isArray(parsed.arguments) ||
+    typeof parsed.arguments !== "object"
+  ) {
+    return undefined;
+  }
+
+  const allowedToolNames = new Set(
+    tools
+      .map((tool) => tool?.function?.name)
+      .filter((name): name is string => typeof name === "string"),
+  );
+  if (!allowedToolNames.has(parsed.name)) return undefined;
+
+  return [
+    {
+      id: `content_tool_${ulid()}`,
+      type: "function",
+      function: {
+        name: parsed.name,
+        arguments: JSON.stringify(parsed.arguments),
+      },
+    },
+  ];
+}
+
 export class InferenceRouter {
   private db: Database;
   private registry: ModelRegistry;
@@ -167,7 +222,17 @@ export class InferenceRouter {
       cacheHit: false,
     });
 
-    // 9. Build result
+    // 9. Build result. Native tool calls win. For local models that emitted a
+    // strict JSON tool request as content, safely promote it to tool_calls.
+    const nativeToolCalls =
+      Array.isArray(response.toolCalls) && response.toolCalls.length > 0
+        ? response.toolCalls
+        : undefined;
+    const promotedToolCalls = nativeToolCalls
+      ? undefined
+      : parseContentToolCall(response.message?.content || "", tools);
+    const toolCalls = nativeToolCalls ?? promotedToolCalls;
+
     return {
       content: response.message?.content || "",
       model: model.modelId,
@@ -176,8 +241,10 @@ export class InferenceRouter {
       outputTokens,
       costCents: actualCostCents,
       latencyMs,
-      toolCalls: response.toolCalls,
-      finishReason: response.finishReason || "stop",
+      toolCalls,
+      finishReason: promotedToolCalls
+        ? "tool_calls"
+        : response.finishReason || "stop",
     };
   }
 
@@ -224,6 +291,23 @@ export class InferenceRouter {
       if (isFree || tierOk) {
         return entry;
       }
+    }
+
+    // 3. Last-resort local/free fallback. This lets newly discovered Ollama
+    // models (including Hermes-family models) work without editing the static
+    // routing matrix first. Prefer tool-capable models because agent turns
+    // depend on function calling.
+    const freeFallback = this.registry
+      .getAvailable()
+      .filter((entry) =>
+        entry.enabled &&
+        entry.costPer1kInput === 0 &&
+        entry.costPer1kOutput === 0
+      )
+      .sort((a, b) => Number(b.supportsTools) - Number(a.supportsTools))[0];
+
+    if (freeFallback) {
+      return freeFallback;
     }
 
     return null;

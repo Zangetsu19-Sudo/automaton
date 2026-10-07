@@ -9,6 +9,7 @@ export function createWorkerInferenceBridge(
   return {
     chat: async (params) => {
       const response = await inference.chat({
+        ...(params.signal ? { signal: params.signal } : {}),
         tier: normalizeTier(params.tier),
         messages: params.messages,
         tools: params.tools,
