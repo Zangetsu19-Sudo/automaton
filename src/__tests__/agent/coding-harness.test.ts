@@ -49,7 +49,7 @@ describe("agent/CodingHarness confinement", () => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
-  async function createHarness(conway: ConwayClient) {
+  async function createHarness(conway: ConwayClient, inference?: HarnessContext["inference"]) {
     const harness = new CodingHarness();
     const workspace = new AgentWorkspace("goal-coding", path.join(testRoot, "workspace"));
     const context: HarnessContext = {
@@ -60,7 +60,7 @@ describe("agent/CodingHarness confinement", () => {
       config: createTestConfig(),
       db,
       conway,
-      inference: { chat: async () => ({ content: "done" }) },
+      inference: inference ?? { chat: async () => ({ content: "done" }) },
       budget: {
         maxTurns: 5,
         maxCostCents: 50,
@@ -121,6 +121,34 @@ describe("agent/CodingHarness confinement", () => {
 
     expect(out).toContain("Blocked: path");
     expect(out).toContain("outside workspace");
+  });
+
+  it("reports command failure even when the command printed output", async () => {
+    const out = await runTool(createConwayStub({
+      exec: async () => ({ stdout: "tests failed", stderr: "", exitCode: 1 }),
+    }), "exec", { command: "npm test" });
+    expect(out).toContain("Exit code: 1");
+    expect(out).toContain("tests failed");
+  });
+
+  it("requires a successful exec after the latest edit before completion", async () => {
+    const calls = [
+      ["write_file", { path: "example.js", content: "console.log(1)" }],
+      ["task_done", { summary: "unverified", success: true }],
+      ["exec", { command: "node example.js" }],
+      ["task_done", { summary: "verified", success: true }],
+    ];
+    let turn = 0;
+    const harness = await createHarness(createConwayStub(), {
+      chat: async () => {
+        const [name, args] = calls[turn++];
+        return { content: "", toolCalls: [{ id: `call-${turn}`, type: "function", function: { name: name as string, arguments: JSON.stringify(args) } }] };
+      },
+    });
+    const result = await harness.execute();
+    expect(result.output).toBe("verified");
+    expect(result.success).toBe(true);
+    expect(turn).toBe(4);
   });
 
   it("blocks list_dir traversal outside the allowed edit root", async () => {

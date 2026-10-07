@@ -233,23 +233,9 @@ export async function runAgentLoop(
 
       // Adapter: local workers use the unified inference path so planner-backed
       // harnesses can preserve tier + responseFormat contracts.
-      const preferredLocalWorkerModel =
-        modelRegistry
-          .getAll()
-          .find(
-            (entry) =>
-              entry.enabled &&
-              entry.provider === "ollama" &&
-              /coder/i.test(entry.modelId),
-          )?.modelId ??
-        modelRegistry
-          .getAll()
-          .find(
-            (entry) =>
-              entry.enabled &&
-              entry.provider === "ollama",
-          )?.modelId ??
-        config.inferenceModel;
+      // Honor the selected model instead of silently loading a larger installed
+      // coder model, which can exceed the entire worker budget on CPU machines.
+      const preferredLocalWorkerModel = config.localWorkerModel || config.inferenceModel;
 
       const workerInference: WorkerInferenceClient =
         config.runtimeMode === "local"
@@ -261,6 +247,7 @@ export async function runAgentLoop(
                     : preferredLocalWorkerModel;
 
                 const response = await inference.chat(params.messages, {
+                  signal: params.signal,
                   model,
                   tools: params.tools,
                   maxTokens: params.maxTokens,

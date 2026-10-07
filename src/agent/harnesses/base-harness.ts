@@ -21,6 +21,7 @@ export abstract class BaseHarness implements AgentHarness {
   protected loopDetector!: LoopDetector;
   protected messages: ChatMessage[] = [];
   protected artifacts: string[] = [];
+  protected lastExecutionSucceeded = false;
 
   async initialize(task: TaskNode, context: HarnessContext): Promise<void> {
     this.task = task;
@@ -35,6 +36,7 @@ export abstract class BaseHarness implements AgentHarness {
       { role: "user", content: this.buildTaskPrompt() },
     ];
     this.artifacts = [];
+    this.lastExecutionSucceeded = false;
   }
 
   abstract getToolDefs(): HarnessTool[];
@@ -121,7 +123,7 @@ export abstract class BaseHarness implements AgentHarness {
 
       let response: { content: string; toolCalls?: InferenceToolCall[] };
       try {
-        response = await this.context.inference.chat({
+        response = await this.inferWithinBudget({
           tier: nextInferenceTier,
           messages: this.messages,
           tools: toolDefs,
@@ -130,6 +132,8 @@ export abstract class BaseHarness implements AgentHarness {
         });
         consecutiveInferenceErrors = 0;
       } catch (error) {
+        this.checkBudget();
+        this.context.abortSignal.throwIfAborted();
         consecutiveInferenceErrors++;
         const message = error instanceof Error ? error.message : String(error);
         logger.error(
@@ -162,6 +166,8 @@ export abstract class BaseHarness implements AgentHarness {
         let taskDone: { summary: string; success: boolean } | null = null;
 
         for (const toolCall of response.toolCalls) {
+          this.checkBudget();
+          this.context.abortSignal.throwIfAborted();
           const loopResult = this.loopDetector.recordToolCall(
             toolCall.function.name,
             toolCall.function.arguments,
@@ -205,6 +211,7 @@ export abstract class BaseHarness implements AgentHarness {
                   /^Patched /i.test(output));
 
               if (successfulArtifact) {
+                this.lastExecutionSucceeded = false;
                 try {
                   const parsedArgs =
                     typeof toolCall.function.arguments === "string"
@@ -217,6 +224,10 @@ export abstract class BaseHarness implements AgentHarness {
                 } catch {
                   // Ignore artifact argument parsing failures.
                 }
+              }
+
+              if (tool.name === "exec") {
+                this.lastExecutionSucceeded = /^Exit code: 0\n/.test(output);
               }
 
               if (tool.name === "task_done") {
@@ -323,6 +334,35 @@ export abstract class BaseHarness implements AgentHarness {
       costCents: this.context.budget.costUsedCents,
       duration: Date.now() - this.context.budget.startedAt,
     };
+  }
+
+  private async inferWithinBudget(
+    params: Parameters<HarnessContext["inference"]["chat"]>[0],
+  ): Promise<{ content: string; toolCalls?: InferenceToolCall[] }> {
+    const { budget, abortSignal } = this.context;
+    const controller = new AbortController();
+    const remaining = Math.max(1, budget.timeoutMs - (Date.now() - budget.startedAt));
+    const abort = () => controller.abort(new Error("Harness execution aborted by abort signal"));
+    abortSignal.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(() => controller.abort(new Error("Budget exhausted: inference timeout")), remaining);
+    let onAbort: () => void = () => {};
+    try {
+      if (abortSignal.aborted) abort();
+      const cancelled = new Promise<never>((_, reject) => {
+        onAbort = () => reject(controller.signal.reason);
+        controller.signal.addEventListener("abort", onAbort, { once: true });
+        if (controller.signal.aborted) onAbort();
+      });
+      controller.signal.throwIfAborted();
+      return await Promise.race([
+        this.context.inference.chat({ ...params, signal: controller.signal }),
+        cancelled,
+      ]);
+    } finally {
+      clearTimeout(timer);
+      abortSignal.removeEventListener("abort", abort);
+      controller.signal.removeEventListener("abort", onAbort);
+    }
   }
 
   private checkBudget(): void {

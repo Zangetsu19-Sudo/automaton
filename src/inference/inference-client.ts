@@ -36,6 +36,7 @@ export interface UnifiedInferenceResult {
 }
 
 interface SharedChatParams {
+  signal?: AbortSignal;
   messages: ChatMessage[];
   temperature?: number;
   maxTokens?: number;
@@ -108,6 +109,7 @@ export class UnifiedInferenceClient {
     let totalRetries = 0;
 
     for (const resolved of candidates) {
+      params.signal?.throwIfAborted();
       if (this.isProviderCircuitOpen(resolved.provider.id)) {
         failedProviders.push(resolved.provider.id);
         continue;
@@ -126,6 +128,7 @@ export class UnifiedInferenceClient {
           },
         };
       } catch (error) {
+        params.signal?.throwIfAborted();
         if (!(error instanceof ProviderAttemptError)) {
           throw error;
         }
@@ -167,6 +170,7 @@ export class UnifiedInferenceClient {
         },
       };
     } catch (error) {
+      params.signal?.throwIfAborted();
       if (!(error instanceof ProviderAttemptError)) {
         throw error;
       }
@@ -184,6 +188,7 @@ export class UnifiedInferenceClient {
     let retries = 0;
 
     while (true) {
+      params.signal?.throwIfAborted();
       try {
         const result = await this.executeSingleRequest(
           resolved.client,
@@ -194,6 +199,7 @@ export class UnifiedInferenceClient {
         );
         return { result, retries };
       } catch (error) {
+        params.signal?.throwIfAborted();
         const retryable = this.isRetryableError(error);
         if (!retryable) {
           throw new ProviderAttemptError({
@@ -233,7 +239,7 @@ export class UnifiedInferenceClient {
       const stream = await client.chat.completions.create({
         ...payload,
         stream: true,
-      } as any);
+      } as any, { signal: params.signal });
       const streamed = await this.consumeStreamResponse(stream as any);
       return this.buildUnifiedResult({
         providerId,
@@ -249,7 +255,7 @@ export class UnifiedInferenceClient {
     const completion = await client.chat.completions.create({
       ...payload,
       stream: false,
-    } as any);
+    } as any, { signal: params.signal });
 
     const choice = (completion as any).choices?.[0];
     if (!choice?.message) {

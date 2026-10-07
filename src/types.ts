@@ -70,6 +70,7 @@ export interface AutomatonConfig {
   anthropicApiKey?: string;
   ollamaBaseUrl?: string;
   inferenceModel: string;
+  localWorkerModel?: string;
   maxTokensPerTurn: number;
   heartbeatConfigPath: string;
   dbPath: string;
@@ -358,6 +359,7 @@ export interface InferenceResponse {
 }
 
 export interface InferenceOptions {
+  signal?: AbortSignal;
   model?: string;
   maxTokens?: number;
   temperature?: number;

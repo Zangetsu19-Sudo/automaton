@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { createWorkerInferenceBridge } from "../../agent/worker-inference-bridge.js";
 
 describe("agent/worker-inference-bridge", () => {
+  it("preserves the worker cancellation signal", async () => {
+    const chat = vi.fn().mockResolvedValue({ content: "ok" });
+    const signal = new AbortController().signal;
+    await createWorkerInferenceBridge({ chat } as any).chat({ messages: [], signal });
+    expect(chat.mock.calls[0][0].signal).toBe(signal);
+  });
   it("forwards tier, responseFormat, tools, and token settings to unified inference", async () => {
     const chat = vi.fn().mockResolvedValue({
       content: '{"analysis":"ok"}',

@@ -107,7 +107,7 @@ When calling task_done, provide:
           }
           try {
             const result = await this.context.conway.exec(command, timeoutMs);
-            return formatExecResult(result.stdout ?? "", result.stderr ?? "");
+            return formatExecResult(result.stdout ?? "", result.stderr ?? "", result.exitCode);
           } catch {
             // VM EXEC HOST-FALLBACK GUARD
             if (
@@ -116,7 +116,7 @@ When calling task_done, provide:
             ) {
               return "exec error: VM execution failed; host fallback is disabled.";
             }
-            return localExec(command, timeoutMs);
+            return localExec(command, timeoutMs, this.context.allowedEditRoot);
           }
         },
       },
@@ -351,6 +351,9 @@ When calling task_done, provide:
               "If implementation is impossible, call task_done with success=false."
             );
           }
+          if (success && !this.lastExecutionSucceeded) {
+            throw new Error("Cannot report successful coding completion: run a verification command with exec after the last edit and resolve any nonzero exit code first.");
+          }
           return `TASK_COMPLETE:${success ? "SUCCESS" : "FAILURE"}:${summary}`;
         },
       },
@@ -414,24 +417,24 @@ function confineToWorkspace(
   return resolved;
 }
 
-function formatExecResult(stdout: string, stderr: string): string {
+function formatExecResult(stdout: string, stderr: string, exitCode: number): string {
   const out = stdout.length > MAX_EXEC_OUTPUT
     ? stdout.slice(0, MAX_EXEC_OUTPUT) + `\n[TRUNCATED: ${stdout.length - MAX_EXEC_OUTPUT} chars]`
     : stdout;
   const err = stderr.length > 4000
     ? stderr.slice(0, 4000) + "\n[TRUNCATED]"
     : stderr;
-  return err ? `stdout:\n${out}\nstderr:\n${err}` : out || "(no output)";
+  return `Exit code: ${exitCode}\n` + (err ? `stdout:\n${out}\nstderr:\n${err}` : out || "(no output)");
 }
 
-function localExec(command: string, timeoutMs: number): Promise<string> {
+function localExec(command: string, timeoutMs: number, cwd: string): Promise<string> {
   return new Promise((resolve) => {
-    execCb(command, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    execCb(command, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
       if (error && !stdout && !stderr) {
         resolve(`exec error: ${error.message}`);
         return;
       }
-      resolve(formatExecResult(stdout ?? "", stderr ?? ""));
+      resolve(formatExecResult(stdout ?? "", stderr ?? "", error ? (typeof error.code === "number" ? error.code : 1) : 0));
     });
   });
 }

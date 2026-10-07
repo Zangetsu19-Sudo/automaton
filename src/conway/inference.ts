@@ -144,6 +144,7 @@ export function createInferenceClient(
       apiKey: openAiLikeApiKey,
       backend,
       httpClient: backend === "ollama" ? ollamaHttpClient : httpClient,
+      signal: opts?.signal,
     });
   };
 
@@ -219,6 +220,7 @@ function resolveInferenceBackend(
 }
 
 async function chatViaOpenAiCompatible(params: {
+  signal?: AbortSignal;
   model: string;
   body: Record<string, unknown>;
   apiUrl: string;
@@ -227,6 +229,7 @@ async function chatViaOpenAiCompatible(params: {
   httpClient: ResilientHttpClient;
 }): Promise<InferenceResponse> {
   const resp = await params.httpClient.request(`${params.apiUrl}/v1/chat/completions`, {
+    signal: params.signal,
     method: "POST",
     headers: {
       "Content-Type": "application/json",

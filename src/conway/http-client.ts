@@ -76,13 +76,14 @@ export class ResilientHttpClient {
     const maxRetries = opts.retries ?? this.config.maxRetries;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      opts.signal?.throwIfAborted();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeout);
 
       try {
         const response = await fetch(url, {
           ...opts,
-          signal: controller.signal,
+          signal: opts.signal ? AbortSignal.any([controller.signal, opts.signal]) : controller.signal,
           headers: {
             ...opts.headers,
             ...(opts.idempotencyKey
@@ -112,6 +113,7 @@ export class ResilientHttpClient {
         return response;
       } catch (error) {
         clearTimeout(timer);
+        opts.signal?.throwIfAborted();
         this.consecutiveFailures++;
         if (
           this.consecutiveFailures >= this.config.circuitBreakerThreshold
