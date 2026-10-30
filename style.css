@@ -74,6 +74,8 @@ p { margin-top: 0; }
 .button-secondary { background: transparent; color: var(--accent-dark); }
 .button-secondary:hover, .button-secondary:focus-visible { background: #e6e1d5; }
 .button-light { border-color: var(--white); background: var(--white); color: var(--accent-dark); }
+.button-outline-light { border-color: #a7d9cc; color: var(--white); }
+.button-outline-light:hover, .button-outline-light:focus-visible { background: rgba(255, 255, 255, 0.1); }
 .button:focus-visible, a:focus-visible { outline: 3px solid var(--warm); outline-offset: 3px; }
 .microcopy { max-width: 720px; color: var(--muted); font-size: 0.9rem; }
 .strip {
